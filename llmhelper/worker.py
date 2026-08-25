@@ -11,13 +11,12 @@ import logging
 import os
 import signal
 import time
-from contextlib import contextmanager
-from pathlib import Path
-from typing import Callable, Iterator
+from typing import Callable
 
 from .client import LocalLLM
 from .config import Config, get_config
 from .runner import execute
+from .lock import AlreadyRunning, single_instance  # re-exported for cli
 from .store import JobState, Store
 
 log = logging.getLogger("llmhelper.worker")
@@ -40,55 +39,6 @@ def setup_logging(cfg: Config, verbose: bool = False) -> None:
     # still wanted; their chatter is not.
     for noisy in ("httpx", "httpcore", "urllib3"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
-
-
-class AlreadyRunning(RuntimeError):
-    """Another worker holds the lock."""
-
-
-@contextmanager
-def single_instance(cfg: Config) -> Iterator[None]:
-    """Refuse to start when another worker is already running.
-
-    Several workers do not corrupt the queue — claiming a job is atomic — but they
-    do fight over which model is resident, and each unload/load cycle costs tens of
-    seconds. Repeated autostart launches quietly accumulated four of them during
-    development, which is exactly the kind of thing nobody notices until the
-    machine feels slow.
-    """
-    lock = Path(cfg.paths.logs) / "worker.pid"
-    lock.parent.mkdir(parents=True, exist_ok=True)
-
-    if lock.exists():
-        try:
-            other = int(lock.read_text().strip() or 0)
-        except (ValueError, OSError):
-            other = 0
-        if other and other != os.getpid() and _pid_alive(other):
-            raise AlreadyRunning(
-                f"worker already running as pid {other} (lock: {lock}). "
-                "Stop it first, or delete the lock file if it is stale."
-            )
-
-    lock.write_text(str(os.getpid()), encoding="utf-8")
-    try:
-        yield
-    finally:
-        try:
-            if lock.exists() and lock.read_text().strip() == str(os.getpid()):
-                lock.unlink()
-        except OSError:
-            pass
-
-
-def _pid_alive(pid: int) -> bool:
-    """True if a process with this pid exists. Never raises."""
-    try:
-        import psutil
-
-        return psutil.pid_exists(pid)
-    except Exception:  # noqa: BLE001
-        return False
 
 
 class Worker:

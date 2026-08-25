@@ -619,7 +619,8 @@ def worker(
     once: bool = typer.Option(False, "--once", help="Drain the queue and exit."),
 ) -> None:
     """Run the background worker."""
-    from .worker import AlreadyRunning, Worker, setup_logging, single_instance
+    from .lock import AlreadyRunning, single_instance
+    from .worker import Worker, setup_logging
 
     cfg = get_config()
     setup_logging(cfg, verbose=False)
@@ -639,7 +640,7 @@ def worker(
         return
 
     try:
-        with single_instance(cfg):
+        with single_instance(cfg, "worker"):
             w.run_forever()
     except AlreadyRunning as exc:
         err.print(f"[yellow]{exc}[/yellow]")
@@ -758,6 +759,7 @@ def ui(
     accident — pass --host 0.0.0.0 only deliberately, and read the exposure note
     in the README first.
     """
+    from .lock import AlreadyRunning, single_instance
     from .webui import serve
 
     url = f"http://{'127.0.0.1' if host == '0.0.0.0' else host}:{port}/"
@@ -773,9 +775,123 @@ def ui(
 
         webbrowser.open(url)
     try:
-        serve(host=host, port=port)
+        # Two dashboards are worse than confusing: one binds the port and the
+        # other silently does not, so edits appear to have no effect while a
+        # stale process keeps answering. That cost real debugging time here.
+        with single_instance(get_config(), "webui"):
+            serve(host=host, port=port)
+    except AlreadyRunning as exc:
+        err.print(f"[yellow]{exc}[/yellow]")
+        raise typer.Exit(1)
     except KeyboardInterrupt:
         console.print("stopped")
+
+
+# ------------------------------------------------------------------- server
+
+server_app = typer.Typer(
+    no_args_is_help=True, help="Start, stop and inspect the LM Studio server."
+)
+app.add_typer(server_app, name="server")
+
+
+def _runtime():
+    from .runtime import Runtime
+
+    return Runtime(get_config())
+
+
+@server_app.command("start")
+def server_start() -> None:
+    """Start the model server if it is not already answering."""
+    ok = _runtime().ensure_server()
+    console.print("[green]server up[/]" if ok else "[red]server did not come up[/]")
+    raise typer.Exit(0 if ok else 1)
+
+
+@server_app.command("stop")
+def server_stop() -> None:
+    """Stop the model server, unloading any resident model first."""
+    from .runtime import RuntimeError_
+
+    try:
+        ok = _runtime().stop_server()
+    except RuntimeError_ as exc:
+        err.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print("[green]server stopped[/]" if ok else "[yellow]still answering[/]")
+    raise typer.Exit(0 if ok else 1)
+
+
+@server_app.command("restart")
+def server_restart() -> None:
+    """Stop then start. The resident model is unloaded on the way through."""
+    from .runtime import RuntimeError_
+
+    try:
+        ok = _runtime().restart_server()
+    except RuntimeError_ as exc:
+        err.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print("[green]server restarted[/]" if ok else "[red]did not come back[/]")
+    raise typer.Exit(0 if ok else 1)
+
+
+@server_app.command("status")
+def server_status_cmd() -> None:
+    """Whether the server answers, and what LM Studio thinks."""
+    rt = _runtime()
+    st = rt.server_status()
+    console.print(
+        f"answering: [{'green' if st['answering'] else 'red'}]{st['answering']}[/]"
+    )
+    if st["lms_says"]:
+        console.print(f"lms says : {st['lms_says']}")
+    loaded = [m.identifier for m in rt.loaded()] if rt.can_manage_models else []
+    console.print(f"loaded   : {', '.join(loaded) if loaded else 'nothing'}")
+
+
+@server_app.command("restart-worker")
+def server_restart_worker() -> None:
+    """Stop the worker and start a fresh one.
+
+    Needed after changing this code or config: a worker loads the package once
+    and keeps running whatever it started with.
+    """
+    import subprocess
+    import sys
+    import time
+
+    from .lock import holder, pid_alive
+
+    cfg = get_config()
+    pid = holder(cfg, "worker")
+    if pid:
+        try:
+            import psutil
+
+            proc = psutil.Process(pid)
+            proc.terminate()
+            proc.wait(timeout=20)
+            console.print(f"stopped worker pid {pid}")
+        except Exception as exc:  # noqa: BLE001
+            err.print(f"[red]could not stop pid {pid}: {exc}[/red]")
+            raise typer.Exit(1)
+    else:
+        console.print("no worker was running")
+
+    subprocess.Popen(
+        [sys.executable, "-m", "llmhelper.cli", "worker", "--quiet"],
+        cwd=str(Path(__file__).resolve().parent.parent),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    for _ in range(40):
+        time.sleep(0.25)
+        if (new := holder(cfg, "worker")) and pid_alive(new):
+            console.print(f"[green]worker running as pid {new}[/]")
+            return
+    err.print("[yellow]worker started but took no lock — check logs/worker.log[/yellow]")
 
 
 def main() -> None:

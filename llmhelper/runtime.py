@@ -165,6 +165,44 @@ class Runtime:
             time.sleep(1.5)
         return False
 
+    def stop_server(self) -> bool:
+        """Stop the LM Studio server. Returns True once it stops answering.
+
+        Unloads first: a model left resident holds its VRAM and RAM even with the
+        server down, which is rarely what someone stopping a server wants.
+        """
+        if not self.can_manage_models:
+            raise RuntimeError_("no LM Studio CLI on this machine (remote client)")
+        try:
+            self.unload_all()
+        except RuntimeError_:
+            pass  # stopping matters more than tidying
+        self._lms("server", "stop", check=False, timeout=120)
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            if not self.server_running():
+                return True
+            time.sleep(1.0)
+        return False
+
+    def restart_server(self, wait_s: float | None = None) -> bool:
+        """Stop then start. Useful after changing an LM Studio setting."""
+        self.stop_server()
+        time.sleep(1.5)
+        return self.ensure_server(wait_s=wait_s)
+
+    def server_status(self) -> dict:
+        """What `lms server status` reports, plus our own probe.
+
+        The two can disagree: the CLI knows whether LM Studio thinks a server is
+        running, the probe knows whether it actually answers.
+        """
+        text = self._lms("server", "status", check=False, timeout=60).strip()
+        return {
+            "answering": self.server_running(),
+            "lms_says": text.splitlines()[0] if text else "",
+        }
+
     # -------------------------------------------------------------- models
 
     def catalog(self, refresh: bool = False) -> list[ModelInfo]:

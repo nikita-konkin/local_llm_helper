@@ -79,8 +79,13 @@
     <div class="row"><span class="k">VRAM</span><span class="v" id="s-vram">—</span></div>
     <div class="btns">
       <button onclick="post('/api/server/start')">Start server</button>
+      <button onclick="confirmPost('/api/server/stop','Stop the model server? Any resident model is unloaded.')">Stop server</button>
+      <button onclick="confirmPost('/api/server/restart','Restart the model server? This unloads the resident model and takes a few seconds.')">Restart server</button>
+    </div>
+    <div class="btns">
       <button onclick="post('/api/worker/start')">Start worker</button>
       <button onclick="post('/api/worker/stop')">Stop worker</button>
+      <button onclick="post('/api/worker/restart')">Restart worker</button>
       <button onclick="post('/api/model/unload')">Unload model</button>
     </div>
   </section>
@@ -103,7 +108,9 @@
   <section>
     <h2>Tiers</h2>
     <div class="scroll"><table id="tiers"><tbody></tbody></table></div>
-    <div class="note">Loading a tier unloads whatever is resident. A tier larger than
+    <div class="note">Restart the worker after changing settings or code — it loads
+      the package once and keeps running what it started with.<br>
+      Loading a tier unloads whatever is resident. A tier larger than
       free VRAM will load but run an order of magnitude slower.</div>
   </section>
 
@@ -160,6 +167,10 @@ async function get(url) {
   const r = await fetch(url);
   if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.status);
   return r.json();
+}
+
+async function confirmPost(url, question) {
+  if (confirm(question)) post(url);
 }
 
 async function post(url, body) {

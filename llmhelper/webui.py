@@ -328,6 +328,43 @@ def api_server_start() -> dict:
     return {"server_up": ok}
 
 
+@app.post("/api/server/stop")
+def api_server_stop() -> dict:
+    from .runtime import RuntimeError_
+
+    try:
+        ok = runtime().stop_server()
+    except RuntimeError_ as exc:
+        raise HTTPException(400, str(exc)) from exc
+    _invalidate()
+    return {"server_up": not ok, "message": "server stopped" if ok else "still answering"}
+
+
+@app.post("/api/server/restart")
+def api_server_restart() -> dict:
+    from .runtime import RuntimeError_
+
+    try:
+        ok = runtime().restart_server()
+    except RuntimeError_ as exc:
+        raise HTTPException(400, str(exc)) from exc
+    _invalidate()
+    return {"server_up": ok, "message": "restarted" if ok else "did not come back"}
+
+
+@app.post("/api/worker/restart")
+def api_worker_restart() -> dict:
+    """Stop the worker and start a fresh one.
+
+    Needed after a code or settings change: a worker loads the package once and
+    keeps running whatever it started with, which has quietly produced stale
+    behaviour more than once.
+    """
+    api_worker_stop()
+    time.sleep(1.0)
+    return api_worker_start()
+
+
 @app.post("/api/worker/start")
 def api_worker_start() -> dict:
     if (pid := worker_pid()) is not None:

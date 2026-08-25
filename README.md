@@ -146,6 +146,8 @@ llmh worker                            # run the background worker
 llmh stats                             # tokens kept out of context
 llmh prune                             # delete old outbox files
 llmh ui                                # dashboard: status, usage, queue, settings
+llmh server start|stop|restart|status  # the LM Studio model server
+llmh server restart-worker             # after changing code or settings
 ```
 
 Quote glob patterns, or your shell will expand them before `llmh` sees them.
@@ -159,6 +161,15 @@ llmh ui
 Serves a single page on `http://127.0.0.1:8770` — status, the savings ledger, the
 per-project table, the queue with failure reasons, and editable settings. No build
 step and no JavaScript dependencies.
+
+Controls: start/stop/restart the model server, start/stop/restart the worker,
+load or unload a tier, prune old results. Stopping the server unloads the resident
+model first — leaving one loaded would hold its VRAM with nothing to serve it.
+
+**Only one dashboard runs at a time**, held by `logs/webui.pid`, for the same
+reason as the worker: two of them means one binds the port and the other silently
+does not, so a code change appears to do nothing while a stale process keeps
+answering. That cost real debugging time before the lock existed.
 
 Two deliberate limits:
 
