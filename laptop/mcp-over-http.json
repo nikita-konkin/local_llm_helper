@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "local-llm": {
+      "type": "http",
+      "url": "http://DESKTOP-LAN-IP:8765/mcp"
+    }
+  }
+}

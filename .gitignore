@@ -1,0 +1,27 @@
+# Runtime state and private content — none of this belongs in a public repo.
+
+# The outbox holds digests of whatever files were pointed at, so it contains
+# whichever private work has been run through the tool. This is the single most
+# important line in this file.
+results/
+
+# Job specs and the savings ledger record file paths from private projects.
+jobs/
+
+# Download progress, worker logs, LM Studio transcripts.
+logs/
+
+# Measurements are machine-specific; the ones worth publishing are in the README.
+bench/
+
+# Local config carries absolute paths, a username and a LAN address.
+# config.toml.example is the version that ships.
+config.toml
+
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Not for sharing: this points at one machine's interpreter by absolute path.
+.mcp.json
