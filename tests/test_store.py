@@ -12,8 +12,14 @@ from llmhelper.store import JobState, Priority, Store
 
 
 @pytest.fixture
-def store() -> Store:
-    return Store(url="sqlite:///:memory:")
+def store(sandbox) -> Store:
+    """In-memory queue on the temporary sandbox config.
+
+    Takes `sandbox` rather than the developer's config.toml, which is gitignored
+    and therefore absent from a fresh clone — a suite that cannot run on clone is
+    a suite nobody runs.
+    """
+    return Store(cfg=sandbox, url="sqlite:///:memory:")
 
 
 def test_submit_then_claim(store: Store):

@@ -8,6 +8,9 @@ returning "" looked like a valid answer. It must raise instead.
 
 from __future__ import annotations
 
+from pathlib import Path
+from types import SimpleNamespace
+
 import httpx
 import pytest
 
@@ -15,6 +18,16 @@ from llmhelper.client import LocalLLM, LocalLLMError
 from llmhelper.config import Tier
 
 TIER = Tier(name="fast", model="test/model", context=8192, min_free_ram_gb=1)
+
+# The client only reads server settings, so a minimal stand-in keeps these unit
+# tests independent of any config file on disk.
+_FAKE_CFG = SimpleNamespace(
+    server=SimpleNamespace(
+        base_url="http://127.0.0.1:1234/v1",
+        request_timeout_s=30.0,
+        lms_exe=Path("no-such-lms"),
+    )
+)
 THINKING_TIER = Tier(
     name="fast",
     model="test/model",
@@ -36,7 +49,9 @@ def make_client(handler) -> tuple[LocalLLM, dict]:
         return handler(request)
 
     client = httpx.Client(transport=httpx.MockTransport(transport_handler))
-    return LocalLLM(client=client), captured
+    # Explicit cfg: LocalLLM would otherwise call get_config(), which needs a
+    # config.toml this repo deliberately does not ship.
+    return LocalLLM(cfg=_FAKE_CFG, client=client), captured
 
 
 def response(content: str, finish: str = "stop", reasoning_tokens: int = 0) -> httpx.Response:
