@@ -145,9 +145,34 @@ llmh submit digest -p <path> -q "..."  # queue it instead
 llmh worker                            # run the background worker
 llmh stats                             # tokens kept out of context
 llmh prune                             # delete old outbox files
+llmh ui                                # dashboard: status, usage, queue, settings
 ```
 
 Quote glob patterns, or your shell will expand them before `llmh` sees them.
+
+## Dashboard
+
+```bash
+llmh ui
+```
+
+Serves a single page on `http://127.0.0.1:8770` — status, the savings ledger, the
+per-project table, the queue with failure reasons, and editable settings. No build
+step and no JavaScript dependencies.
+
+Two deliberate limits:
+
+- **Bound to localhost.** The controls start processes and load multi-gigabyte
+  models. `--host 0.0.0.0` works and warns; there is no authentication.
+- **`read_roots` and `deny_globs` are read-only here.** They are the filesystem
+  security boundary. A UI able to widen them would let anything reaching the page
+  grant itself the whole disk. They are shown so you can see the boundary, and
+  edited in `config.toml` deliberately.
+
+Settings writes edit `config.toml` line by line rather than round-tripping it
+through a TOML writer, so the comments explaining every tuned number survive. The
+file is backed up and restored if the result fails to parse. A running worker
+keeps its old settings until restarted.
 
 ## Model tiers
 

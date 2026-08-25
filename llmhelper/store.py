@@ -273,14 +273,35 @@ class Store:
             job.error = None
             s.add(Result(job_id=job_id, summary=summary, path=path, meta=meta or {}))
 
-    def fail(self, job_id: str, error: str) -> JobState:
-        """Requeue if attempts remain, otherwise mark failed. Returns the new state."""
+    #: Failures that will never succeed on a retry. A refused path stays refused
+    #: and a malformed spec stays malformed, so retrying only burns the attempt
+    #: budget and makes the queue look busy while achieving nothing. Seen in real
+    #: use: a digest aimed outside the read roots was attempted three times.
+    PERMANENT_ERRORS = (
+        "GuardError",
+        "FileNotFoundError",
+        "PermissionError",
+        "ValueError",
+        "KeyError",
+    )
+
+    @classmethod
+    def is_permanent(cls, error: str) -> bool:
+        return any(error.startswith(name + ":") for name in cls.PERMANENT_ERRORS)
+
+    def fail(self, job_id: str, error: str, permanent: bool | None = None) -> JobState:
+        """Requeue if attempts remain, otherwise mark failed. Returns the new state.
+
+        A permanent error skips the retries entirely.
+        """
+        if permanent is None:
+            permanent = self.is_permanent(error)
         with self.session() as s:
             job = s.get(Job, job_id)
             if job is None:
                 raise KeyError(job_id)
             job.error = error[:4000]
-            if job.attempts < job.max_attempts:
+            if not permanent and job.attempts < job.max_attempts:
                 job.state = JobState.QUEUED
                 job.started_at = None
                 job.worker_id = None

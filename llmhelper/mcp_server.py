@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 from typing import Annotated, Any, Optional
 
 import anyio
@@ -51,10 +52,33 @@ BANNER = (
 # the work be queued instead. Roughly a minute or two of local compute.
 EXPRESS_SOURCE_LIMIT = 120_000
 
-# Claude Code launches an MCP server as a child of the session, so our working
-# directory is that session's project root. Captured once at import, before
-# anything can chdir, so every call can be attributed to the project that made it.
-CLIENT = os.getcwd()
+def _client_label() -> str:
+    r"""Best guess at which project launched this server.
+
+    Claude Code spawns an MCP server as a child of the session, so the working
+    directory is that session's project root. Not always, though: a server
+    started by something that sets no cwd inherits the system directory, which
+    turned up in the ledger as a project named C:\WINDOWS\system32. Those are
+    labelled rather than reported as if they were somebody's project.
+
+    Captured once at import, before anything can chdir.
+    """
+    cwd = Path(os.getcwd())
+    system_dirs = {
+        Path(os.environ.get("SystemRoot", "C:/Windows")).resolve(),
+        Path(os.environ.get("SystemRoot", "C:/Windows")).resolve() / "system32",
+        Path("/"),
+    }
+    try:
+        resolved = cwd.resolve()
+    except OSError:
+        return "unknown"
+    if resolved in system_dirs or resolved == Path.home():
+        return f"unattributed ({resolved.name or resolved})"
+    return str(resolved)
+
+
+CLIENT = _client_label()
 
 server = MCPServer(name="local-llm-helper", instructions=INSTRUCTIONS, version="0.1.0")
 

@@ -233,3 +233,29 @@ def test_a_different_model_never_matches_regardless_of_origin():
     tier = Tier(name="fast", model="qwen/qwen3.5-9b", context=8192, min_free_ram_gb=1)
     assert not ModelInfo(key="gemma-4-12b-it-qat", origin="server").matches(tier)
     assert not ModelInfo(key="gemma-4-12b-it-qat", origin="disk").matches(tier)
+
+
+def test_permanent_failures_are_not_retried(store: Store):
+    """A refused path stays refused. Retrying it three times helps nobody.
+
+    Seen in real use: a session pointed a digest at a file outside the read
+    roots, and the queue dutifully attempted it three times before giving up.
+    """
+    jid = store.submit("digest", {}, max_attempts=3)
+    store.claim("w1")
+    assert store.fail(jid, "GuardError: refusing to read outside the allowed roots") is JobState.FAILED
+    assert store.get(jid).attempts == 1, "should not have burned the retry budget"
+    assert store.claim("w1") is None
+
+
+def test_transient_failures_are_still_retried(store: Store):
+    jid = store.submit("digest", {}, max_attempts=3)
+    store.claim("w1")
+    assert store.fail(jid, "LocalLLMError: connection reset") is JobState.QUEUED
+    assert store.claim("w1") is not None
+
+
+def test_permanence_can_be_forced_either_way(store: Store):
+    jid = store.submit("digest", {}, max_attempts=3)
+    store.claim("w1")
+    assert store.fail(jid, "LocalLLMError: nope", permanent=True) is JobState.FAILED

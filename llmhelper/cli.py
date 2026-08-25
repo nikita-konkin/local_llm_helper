@@ -745,6 +745,39 @@ def prune(
     console.print(f"{verb} {removed} file(s), {freed / 1024:.0f} KB")
 
 
+@app.command()
+def ui(
+    host: str = typer.Option("127.0.0.1", "--host", help="Bind address."),
+    port: int = typer.Option(8770, "--port"),
+    open_browser: bool = typer.Option(True, "--open/--no-open"),
+) -> None:
+    """Serve the dashboard: status, usage, the queue and settings.
+
+    Bound to localhost by default. The controls here start processes and load
+    multi-gigabyte models, which is not something to expose to a network by
+    accident — pass --host 0.0.0.0 only deliberately, and read the exposure note
+    in the README first.
+    """
+    from .webui import serve
+
+    url = f"http://{'127.0.0.1' if host == '0.0.0.0' else host}:{port}/"
+    console.print(f"dashboard on [bold]{url}[/]")
+    if host == "0.0.0.0":
+        console.print(
+            "[yellow]Bound to all interfaces. There is no authentication: anything "
+            "that reaches this port can start the worker, load models and change "
+            "settings.[/yellow]"
+        )
+    if open_browser:
+        import webbrowser
+
+        webbrowser.open(url)
+    try:
+        serve(host=host, port=port)
+    except KeyboardInterrupt:
+        console.print("stopped")
+
+
 def main() -> None:
     try:
         app()
