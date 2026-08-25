@@ -19,6 +19,7 @@ the boundary is edited in ``config.toml``, deliberately and with intent.
 from __future__ import annotations
 
 import os
+import socket
 import subprocess
 import sys
 import time
@@ -35,6 +36,47 @@ from .store import Store
 app = FastAPI(title="local_llm_helper", docs_url=None, redoc_url=None)
 
 _started = time.monotonic()
+
+# The dashboard polls; LM Studio logs every request it receives. Without a cache
+# a 5 s refresh put ~25 requests a minute into its Developer tab forever, which
+# is not a dashboard reporting on a system so much as a dashboard being the
+# system's main workload. Runtime probes are cached; the database is not, since
+# reading SQLite costs nobody anything.
+_PROBE_TTL = 20.0
+_probe_cache: dict[str, Any] = {"at": 0.0, "value": None}
+
+
+def _probe(force: bool = False) -> dict:
+    """Runtime state, at most once per _PROBE_TTL seconds."""
+    now = time.monotonic()
+    if not force and _probe_cache["value"] is not None and now - _probe_cache["at"] < _PROBE_TTL:
+        return _probe_cache["value"]
+
+    rt = runtime()
+    snap = rt.snapshot()
+    tiers = []
+    for name, t in cfg().tiers.items():
+        info = rt.find(t) if snap["lms_present"] else None
+        tiers.append(
+            {
+                "name": name,
+                "model": t.model,
+                "quant": t.quant,
+                "context": t.context,
+                "present": info is not None,
+                "size_gb": info.size_gb if info else None,
+                "loaded": (not t.is_embedding) and rt.is_loaded(t),
+                "is_embedding": t.is_embedding,
+            }
+        )
+    value = {"snap": snap, "tiers": tiers, "can_manage_models": rt.can_manage_models}
+    _probe_cache.update(at=now, value=value)
+    return value
+
+
+def _invalidate() -> None:
+    """After anything that changes runtime state, the next read must be fresh."""
+    _probe_cache["value"] = None
 
 
 def cfg() -> Config:
@@ -95,39 +137,32 @@ def _spawn_detached(args: list[str]) -> int:
 
 
 @app.get("/api/status")
-def api_status() -> dict:
-    rt = runtime()
-    snap = rt.snapshot()
+def api_status(fresh: bool = False) -> dict:
+    probe = _probe(force=fresh)
+    snap = probe["snap"]
     pid = worker_pid()
-    c = cfg()
-
-    tiers = []
-    for name, t in c.tiers.items():
-        info = rt.find(t) if snap["lms_present"] else None
-        tiers.append(
-            {
-                "name": name,
-                "model": t.model,
-                "quant": t.quant,
-                "context": t.context,
-                "present": info is not None,
-                "size_gb": info.size_gb if info else None,
-                "loaded": any(name != "embed" and rt.is_loaded(t) for _ in (0,)),
-                "is_embedding": t.is_embedding,
-            }
-        )
 
     return {
         "server_up": snap["server_up"],
         "base_url": snap["base_url"],
-        "can_manage_models": rt.can_manage_models,
+        "can_manage_models": probe["can_manage_models"],
         "worker_pid": pid,
         "ram_free_gb": snap["ram_free_gb"],
         "ram_total_gb": snap["ram_total_gb"],
         "vram_used_mb": snap["vram_used_mb"],
         "vram_total_mb": snap["vram_total_mb"],
         "loaded": snap["loaded"],
-        "tiers": tiers,
+        "tiers": probe["tiers"],
+        "probe_age_s": round(time.monotonic() - _probe_cache["at"]),
+        # Which machine's ledger this is. A remote client (base_url pointing at
+        # another box) keeps its OWN jobs.db, so its savings are recorded where it
+        # runs, not where the model runs. Saying so here stops that being a
+        # mystery: a laptop's numbers live on the laptop.
+        "host": socket.gethostname(),
+        "db": str(cfg().paths.jobs_db),
+        "remote_model": not cfg().server.base_url.startswith(
+            ("http://127.0.0.1", "http://localhost")
+        ),
         "queue": store().counts(),
         "uptime_s": round(time.monotonic() - _started),
     }
@@ -289,6 +324,7 @@ def api_server_start() -> dict:
     if not rt.can_manage_models:
         raise HTTPException(400, "no LM Studio CLI on this machine (remote client)")
     ok = rt.ensure_server()
+    _invalidate()
     return {"server_up": ok}
 
 
@@ -300,6 +336,7 @@ def api_worker_start() -> dict:
     for _ in range(40):  # the child writes the lock file, so wait for it
         time.sleep(0.25)
         if (pid := worker_pid()) is not None:
+            _invalidate()
             return {"worker_pid": pid}
     return {"worker_pid": None, "message": "started, but no lock file yet — check logs"}
 
@@ -315,6 +352,7 @@ def api_worker_stop() -> dict:
         proc = psutil.Process(pid)
         proc.terminate()
         proc.wait(timeout=15)
+        _invalidate()
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(500, f"could not stop pid {pid}: {exc}") from exc
     return {"stopped": True}
@@ -333,6 +371,7 @@ def api_model_load(tier_name: str) -> dict:
         rt.ensure_loaded(tier)
     except Exception as exc:  # noqa: BLE001 - RAM refusal is a normal outcome
         raise HTTPException(400, str(exc)) from exc
+    _invalidate()
     return {"loaded": [m.identifier for m in rt.loaded()]}
 
 
@@ -342,6 +381,7 @@ def api_model_unload() -> dict:
     if not rt.can_manage_models:
         raise HTTPException(400, "no LM Studio CLI on this machine (remote client)")
     rt.unload_all()
+    _invalidate()
     return {"loaded": []}
 
 

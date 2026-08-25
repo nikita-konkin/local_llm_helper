@@ -174,6 +174,22 @@ through a TOML writer, so the comments explaining every tuned number survive. Th
 file is backed up and restored if the result fails to parse. A running worker
 keeps its old settings until restarted.
 
+**The dashboard polls, and LM Studio logs every request it receives.** At a 5 s
+refresh that put ~25 requests a minute into its Developer tab permanently — the
+dashboard becoming the system's main workload. Runtime probes are cached for 20 s
+and the page refreshes every 15 s, which brought it to ~4/min; controls force a
+fresh read so an action's effect still shows immediately.
+
+### Whose numbers are these?
+
+The ledger is **per machine**. A second machine running its own copy — pointing
+`base_url` at this one's LM Studio to borrow the GPU — keeps its own `jobs.db`, so
+its savings appear in `llmh stats` *there*, not here. The dashboard names the host
+it is reporting on for exactly this reason.
+
+Only the HTTP-server setup (`--http`, where a remote Claude Code calls in) records
+into this machine's ledger, because the handler runs here.
+
 ## Model tiers
 
 The worker keeps **one** model resident and unloads before switching.

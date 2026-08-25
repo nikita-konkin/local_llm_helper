@@ -113,7 +113,11 @@
       <thead><tr><th>project</th><th class="n">calls</th><th class="n">read</th>
       <th class="n">saved</th></tr></thead><tbody></tbody></table></div>
     <div class="note">A project appears only once it has actually called a tool.
-      Availability is not use.</div>
+      Availability is not use.<br><br>
+      This is <b id="db-host">this machine's</b> ledger only. A second machine
+      running its own copy keeps its own database, so its savings show up in
+      <code>llmh stats</code> <em>there</em>, not here — even when it borrows this
+      machine's GPU.</div>
   </section>
 
   <section>
@@ -168,17 +172,18 @@ async function post(url, body) {
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(j.detail || j.error || r.status);
     flash(j.message || j.note || 'done');
-    refresh();
+    refresh(true);
     return j;
   } catch (e) { flash(String(e.message || e), true); }
 }
 
 function pill(text, cls) { return `<span class="pill ${cls}">${text}</span>`; }
 
-async function refresh() {
+async function refresh(fresh) {
   try {
-    const s = await get('/api/status');
-    $('hdr').textContent = s.base_url;
+    const s = await get('/api/status' + (fresh ? '?fresh=true' : ''));
+    $('hdr').innerHTML = esc(s.host) + ' &nbsp;·&nbsp; <span class="dim">'
+      + esc(s.base_url) + (s.remote_model ? ' (remote model)' : '') + '</span>';
     $('s-server').innerHTML = s.server_up ? pill('up','ok') : pill('down','bad');
     $('s-worker').innerHTML = s.worker_pid
       ? pill('running · pid ' + s.worker_pid,'ok') : pill('stopped','warn');
@@ -227,6 +232,7 @@ async function refresh() {
         <td class="n">${cancel}</td></tr>`;
     }).join('') : '<tr class="muted-row"><td colspan="5">queue empty</td></tr>';
 
+    const dbh = $('db-host'); if (dbh) dbh.textContent = esc(s.host) + "'s";
     $('tick').textContent = 'updated ' + new Date().toLocaleTimeString();
   } catch (e) {
     $('hdr').innerHTML = pill('dashboard cannot reach the API','bad');
@@ -266,7 +272,7 @@ async function saveSettings() {
 
 loadSettings();
 refresh();
-setInterval(refresh, 5000);
+setInterval(refresh, 15000);
 </script>
 </body>
 </html>

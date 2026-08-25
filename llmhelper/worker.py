@@ -34,6 +34,12 @@ def setup_logging(cfg: Config, verbose: bool = False) -> None:
         handlers=handlers,
         force=True,
     )
+    # basicConfig turns INFO on for every library too. httpx then logs a line per
+    # request, so a health poll every few minutes filled worker.log with
+    # "HTTP Request: GET /v1/models 200 OK" and nothing else. Their warnings are
+    # still wanted; their chatter is not.
+    for noisy in ("httpx", "httpcore", "urllib3"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
 class AlreadyRunning(RuntimeError):
