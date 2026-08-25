@@ -40,26 +40,62 @@ One real query — "is this data read as images or arrays?" over 30,960 tokens o
 took **403 s on `work` and 22 s on `fast`, with the same answer**. Every handler
 therefore defaults to `fast`; `work` has to be asked for by name.
 
-## Setup status
+## Install
 
-Already done and verified:
-
-- Python 3.12 venv at `.venv` (`--system-site-packages`, reuses your torch/faster-whisper)
-- `mcp` SDK installed; everything else was already present
-- `llmhelper.pth` in the **venv's** site-packages so the package imports from any cwd
-- LM Studio server running headless on `http://127.0.0.1:1234/v1`
-
-Remaining, one command — register the MCP server so it is available in every project:
+Requires [LM Studio](https://lmstudio.ai) with at least one GGUF model, and
+Python 3.11+. Windows paths are shown; macOS and Linux differ only in the
+interpreter path (`.venv/bin/python`).
 
 ```bash
-claude mcp add local-llm --scope user -- "D:\local_llm_helper\.venv\Scripts\python.exe" -m llmhelper.mcp_server
+git clone <this repo> local_llm_helper && cd local_llm_helper
+python -m venv .venv
+.venv\Scripts\pip install mcp httpx sqlalchemy typer rich tiktoken psutil
+copy config.toml.example config.toml
 ```
 
-A project-scoped `.mcp.json` is also present, which covers sessions started inside
-`D:\local_llm_helper` without the command above.
+Edit two things in `config.toml`:
 
-`D:\local_llm_helper` is on the user PATH, so `llmh` works from any directory. A
-shell opened before that was set will not see it — start a new one.
+| Setting | What it is |
+|---|---|
+| `server.lms_exe` | where LM Studio's CLI lives. Omit on a remote client — see below |
+| `paths.read_roots` | **the only directories the local model may read.** This is the security boundary, not a convenience setting |
+
+Then make the package importable from any working directory, so the MCP server
+starts regardless of which project launched it:
+
+```bash
+echo %CD% > .venv\Lib\site-packages\llmhelper.pth
+```
+
+Check it:
+
+```bash
+.venv\Scripts\python -m llmhelper.cli doctor --fix
+.venv\Scripts\python -m pytest tests -q
+```
+
+`doctor` starts LM Studio's server if it is down and reports which tiers have a
+model on disk. The tests need no configuration and no model — they run on a
+temporary config and should pass on a fresh clone.
+
+## Register it with Claude Code
+
+```bash
+claude mcp add local-llm --scope user -- "<abs path>\.venv\Scripts\python.exe" -m llmhelper.mcp_server
+```
+
+`--scope user` makes it available in every project. There is no CLI-only route:
+the same object can be written by hand into a project's `.mcp.json` or under
+`mcpServers` in `~/.claude.json`. See `laptop/README-laptop.md` for connecting a
+second machine over HTTP, and for the security caveats that come with it.
+
+**Availability is not use.** Registering the server does not make an agent reach
+for it — that is what a `CLAUDE.md` is for. Measured here: six connected sessions
+over twelve hours made zero calls until instructions existed telling them when to
+prefer `local_digest` over reading a file, and just as importantly when not to.
+There is a worked example in `docs/CLAUDE.md.example`.
+
+Put the repo directory on `PATH` to use `llmh` from anywhere.
 
 ## Tools exposed to Claude
 
