@@ -77,70 +77,100 @@ fi
 
 say "3. virtualenv"
 
-# An already-activated environment is the usual reason ensurepip works standalone
-# but fails inside a fresh venv: VIRTUAL_ENV, PYTHONHOME and PYTHONPATH leak into
-# the child interpreter and it bootstraps against the wrong prefix. Stripping
-# them for the venv commands costs nothing and removes the whole class.
+# An already-activated environment leaks VIRTUAL_ENV, PYTHONHOME and PYTHONPATH
+# into the child interpreter, which then bootstraps against the wrong prefix.
 if [ -n "${VIRTUAL_ENV:-}" ] || [ -n "${CONDA_PREFIX:-}" ]; then
   info "an environment is active (${VIRTUAL_ENV:-$CONDA_PREFIX})"
   info "creating the venv with it stripped out"
 fi
 CLEAN="env -u VIRTUAL_ENV -u PYTHONHOME -u PYTHONPATH -u CONDA_PREFIX"
 
-# A half-created .venv from a failed attempt makes every retry fail the same
-# way, which reads as permanent when it is leftovers.
+# pip vendors truststore, which on macOS reads platform.mac_ver() and does
+# int() on the parts. Where that comes back empty - some sandboxes, some
+# managed images - every pip command that reaches the network dies with
+# "invalid literal for int() with base 10: ''". pip has no switch to turn it
+# off, so the way past is an installer that does not use Python's TLS stack.
+MAC_VER="$("$PY" -c 'import platform; print(platform.mac_ver()[0])' 2>/dev/null)"
+TRUSTSTORE_BROKEN=0
+case "$(uname -s)" in
+  Darwin) [ -z "$MAC_VER" ] && TRUSTSTORE_BROKEN=1 ;;
+esac
+if [ "$TRUSTSTORE_BROKEN" -eq 1 ]; then
+  info "platform.mac_ver() is empty on this machine, so pip's truststore will"
+  info "crash on any network install. Using uv instead."
+fi
+
 if [ -d .venv ] && [ ! -x .venv/bin/python ]; then
   info "removing an incomplete .venv from a previous attempt"
   rm -rf .venv
 fi
 
-if [ ! -d .venv ]; then
-  if ! $CLEAN "$PY" -m venv .venv 2>/tmp/venv.err; then
-    info "venv with pip failed; creating without it and bootstrapping pip"
+DEPS="mcp httpx sqlalchemy typer rich tiktoken psutil"
+INSTALLED=0
+
+# --- route 1: uv. A static binary that does its own TLS, so the truststore bug
+# --- cannot reach it. Preferred whenever pip is known to be broken here.
+if [ "$TRUSTSTORE_BROKEN" -eq 1 ] || ! command -v python3 >/dev/null 2>&1; then
+  if ! command -v uv >/dev/null 2>&1; then
+    info "installing uv (a standalone installer, ~15 MB)"
+    curl -LsSf https://astral.sh/uv/install.sh 2>/dev/null | sh >/tmp/uv.log 2>&1 || true
+    for d in "$HOME/.local/bin" "$HOME/.cargo/bin"; do
+      [ -x "$d/uv" ] && PATH="$d:$PATH" && export PATH
+    done
+  fi
+  if command -v uv >/dev/null 2>&1; then
     rm -rf .venv
-    if ! $CLEAN "$PY" -m venv --without-pip .venv 2>>/tmp/venv.err; then
-      fail "could not create a virtualenv at all"
-      sed 's/^/        /' /tmp/venv.err | tail -10
-      exit 1
+    if $CLEAN uv venv --python "$PY" .venv >/tmp/uv.err 2>&1        && $CLEAN uv pip install --python .venv/bin/python $DEPS >>/tmp/uv.err 2>&1; then
+      pass "venv and dependencies installed with uv"
+      INSTALLED=1
+    else
+      info "uv did not succeed:"
+      sed 's/^/        /' /tmp/uv.err | tail -8
     fi
+  else
+    info "could not install uv"
+    sed 's/^/        /' /tmp/uv.log 2>/dev/null | tail -5
   fi
 fi
-[ -x .venv/bin/python ] || { fail ".venv has no interpreter"; exit 1; }
 
-# pip may be missing either because we used --without-pip or because ensurepip
-# failed inside the venv. Try the cheap route first, then the network one, and
-# show what went wrong instead of hiding it.
-if ! .venv/bin/python -m pip --version >/dev/null 2>&1; then
-  info "no pip in the venv - bootstrapping"
-  if $CLEAN .venv/bin/python -m ensurepip --upgrade --default-pip >/tmp/pip.err 2>&1; then
-    pass "pip bootstrapped with ensurepip"
-  elif curl -fsS --max-time 60 https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py        && $CLEAN .venv/bin/python /tmp/get-pip.py --quiet >>/tmp/pip.err 2>&1; then
-    pass "pip bootstrapped with get-pip.py"
+# --- route 2: plain venv + pip, for machines where pip is healthy.
+if [ "$INSTALLED" -eq 0 ]; then
+  if [ ! -d .venv ] || [ ! -x .venv/bin/python ]; then
+    rm -rf .venv
+    $CLEAN "$PY" -m venv .venv 2>/tmp/venv.err || {
+      $CLEAN "$PY" -m venv --without-pip .venv 2>>/tmp/venv.err || {
+        fail "could not create a virtualenv"
+        sed 's/^/        /' /tmp/venv.err | tail -10
+        exit 1
+      }
+    }
+  fi
+  if ! .venv/bin/python -m pip --version >/dev/null 2>&1; then
+    $CLEAN .venv/bin/python -m ensurepip --upgrade --default-pip >/tmp/pip.err 2>&1 || true
+  fi
+  if $CLEAN .venv/bin/python -m pip install --quiet $DEPS >>/tmp/pip.err 2>&1; then
+    pass "dependencies installed with pip"
+    INSTALLED=1
   else
-    fail "could not get pip into the venv"
-    info "what was tried, and what it said:"
-    sed 's/^/        /' /tmp/pip.err | tail -12
+    fail "could not install dependencies"
+    info "what it said:"
+    sed 's/^/        /' /tmp/pip.err | tail -14
     info ""
-    info "if this persists, deactivate the active environment first:"
-    info "  deactivate                       # or: conda deactivate"
-    info "  rm -rf .venv && bash ./laptop/setup-option-a.sh ${HOST}"
+    case "$(cat /tmp/pip.err 2>/dev/null)" in
+      *truststore*|*"invalid literal for int"*)
+        info "this is pip's truststore bug: platform.mac_ver() is empty here."
+        info "confirm with:  ${PY} -c 'import platform; print(repr(platform.mac_ver()))'"
+        info "install uv and re-run - it bypasses pip entirely:"
+        info "  curl -LsSf https://astral.sh/uv/install.sh | sh"
+        ;;
+    esac
     exit 1
   fi
-  rm -f /tmp/get-pip.py
 fi
-pass "pip $(.venv/bin/python -m pip --version 2>/dev/null | awk '{print $2}')"
 
-$CLEAN .venv/bin/python -m pip install --quiet --upgrade pip >/dev/null 2>&1
-if ! $CLEAN .venv/bin/python -m pip install --quiet        mcp httpx sqlalchemy typer rich tiktoken psutil; then
-  fail "dependency install failed"
-  info "retrying loudly so the reason is visible:"
-  $CLEAN .venv/bin/python -m pip install     mcp httpx sqlalchemy typer rich tiktoken psutil 2>&1 | tail -12 | sed 's/^/        /'
-  exit 1
-fi
-pass "$(.venv/bin/python -c 'import mcp, httpx, sqlalchemy, typer, rich, tiktoken, psutil; print("dependencies installed")')"
+[ -x .venv/bin/python ] || { fail ".venv has no interpreter"; exit 1; }
+pass "$(.venv/bin/python -c 'import mcp, httpx, sqlalchemy, typer, rich, tiktoken, psutil; print("all imports resolve")')"
 
-# Importable from any working directory, so the MCP server starts no matter
-# which project's session launches it.
 SITE="$(.venv/bin/python -c 'import site; print(site.getsitepackages()[0])')"
 echo "$ROOT" > "${SITE}/llmhelper.pth"
 pass "importable from any directory"
