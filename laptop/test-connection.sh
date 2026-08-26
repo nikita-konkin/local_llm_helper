@@ -79,36 +79,53 @@ curl -s --max-time 15 -o /dev/null -X POST "$URL" \
 # 4. The one that actually matters. A handshake is a single fast round trip and
 #    survives almost anything; a tool call takes seconds while the model works,
 #    and that is the part which used to die in transit.
+#
+#    Two checks, deliberately. Matching only on a string we sent is a false pass
+#    waiting to happen: several MCP error shapes echo the arguments back, so a
+#    failure carrying our own prompt would read as success. So:
+#
+#      "isError":false  - structural, from the response envelope, not the text
+#      42               - the model's answer to 6x7, a token that appears
+#                         NOWHERE in the request, so it can only come from
+#                         inference actually having run
 echo
 echo "4. tool call (the part that was failing)"
 START=$(date +%s)
-RESP="$(curl -s --max-time 120 -X POST "$URL" \
-  -H 'Content-Type: application/json' \
-  -H 'Accept: application/json, text/event-stream' \
-  -H "mcp-session-id: ${SID}" \
-  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"local_ask","arguments":{"prompt":"Reply with exactly: LAPTOP_OK","max_out_tokens":20}}}' 2>&1)"
+RESP="$(curl -s --max-time 120 -X POST "$URL"   -H 'Content-Type: application/json'   -H 'Accept: application/json, text/event-stream'   -H "mcp-session-id: ${SID}"   -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"local_ask","arguments":{"prompt":"What is six times seven? Reply with only the number.","max_out_tokens":24}}}' 2>&1)"
 ELAPSED=$(( $(date +%s) - START ))
 
-case "$RESP" in
-  *LAPTOP_OK*)
-    pass "local_ask returned in ${ELAPSED}s"
-    echo
-    echo "The server is reachable and tool calls work from this machine."
-    echo "If Claude Code still reports it as unreachable, that is client-side"
-    echo "state: it stops retrying a server that failed earlier in the session."
-    echo "Start a new session, or re-add it:"
-    echo
-    echo "  claude mcp remove local-llm"
-    echo "  claude mcp add --transport http local-llm ${URL}"
-    ;;
-  "")
-    fail "no response after ${ELAPSED}s"
-    info "the call left this machine and nothing came back - the server may be"
-    info "streaming instead of returning JSON. On the Windows box check that"
-    info "start-mcp-http.cmd does NOT pass --sse."
-    ;;
-  *)
-    fail "unexpected response after ${ELAPSED}s"
-    info "$(printf '%s' "$RESP" | head -c 300)"
-    ;;
-esac
+NOT_ERROR=0
+HAS_ANSWER=0
+case "$RESP" in *'"isError":false'*) NOT_ERROR=1 ;; esac
+case "$RESP" in *42*) HAS_ANSWER=1 ;; esac
+
+if [ -z "$RESP" ]; then
+  fail "no response after ${ELAPSED}s"
+  info "the call left this machine and nothing came back. The server may be"
+  info "streaming instead of returning JSON: on the Windows box, check that"
+  info "autostart/start-mcp-http.cmd does NOT pass --sse."
+elif [ "$NOT_ERROR" -eq 1 ] && [ "$HAS_ANSWER" -eq 1 ]; then
+  pass "local_ask returned in ${ELAPSED}s (isError:false, model answered 42)"
+  echo
+  echo "The server is reachable and tool calls work from this machine."
+  echo "If Claude Code still reports it unreachable, that is client-side state:"
+  echo "it stops retrying a server that failed earlier in the session."
+  echo
+  echo "  1. Quit Claude Code completely (not just the window)."
+  echo "  2. Reopen it. A new session re-reads the config and retries."
+  echo
+  echo "No CLI needed. If you want to re-register by hand, the whole file is:"
+  echo
+  echo "  <project>/.mcp.json"
+  echo "  {\"mcpServers\":{\"local-llm\":{\"type\":\"http\",\"url\":\"${URL}\"}}}"
+  echo
+  echo "For every project instead of one, put that same mcpServers object under"
+  echo "the top-level key in ~/.claude.json."
+elif [ "$NOT_ERROR" -eq 0 ]; then
+  fail "server returned an error after ${ELAPSED}s"
+  info "$(printf '%s' "$RESP" | head -c 400)"
+elif [ "$HAS_ANSWER" -eq 0 ]; then
+  fail "call succeeded but the model did not answer (${ELAPSED}s)"
+  info "transport is fine; the model side is not. On the Windows box:  llmh doctor"
+  info "$(printf '%s' "$RESP" | head -c 300)"
+fi

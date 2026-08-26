@@ -31,6 +31,16 @@ The handshake is not evidence. It is one fast round trip and survives almost
 anything; a tool call runs for seconds while the model works, and that is the
 part which fails. Any test that stops at "handshake succeeded" proves nothing.
 
+Nor is echoing back a string you sent. Several MCP error shapes include the
+arguments in the message, so a test that greps its own prompt in the response
+passes on failure. The check is `"isError":false` from the envelope **plus** a
+token that appears nowhere in the request - the model's answer to 6x7 - so it
+can only be satisfied by inference having actually run.
+
+**None of this needs a CLI.** If Claude Code still refuses the server after the
+test passes, quit it completely and reopen: a new session re-reads the config and
+retries. To register by hand, `<project>/.mcp.json` is the whole file.
+
 ## Option B — use the desktop's files from the laptop
 
 Save `mcp-over-http.json` as `.mcp.json` in a project folder on the laptop:
