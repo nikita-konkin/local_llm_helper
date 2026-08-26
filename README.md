@@ -486,6 +486,39 @@ Restart Claude Code either way; a running session ignores new servers.
 The server was verified answering MCP `initialize` over HTTP on both `127.0.0.1`
 and `DESKTOP-LAN-IP`.
 
+### When every port times out but ping works
+
+This is the failure to expect, and it looks nothing like a bug in this project.
+Symptom, measured from a laptop on the same LAN:
+
+| check | result |
+|---|---|
+| `ping 192.168.50.32` | 2/2 replies, 2.9 ms |
+| TCP 1234, 8765 | timeout |
+| TCP 445, 135, 3389 | **also timeout** |
+| another host on the LAN, TCP 443 | connects fine |
+
+Core Windows services timing out alongside yours is the tell: nothing
+application-specific is wrong. The adapter is on the Windows **Public** firewall
+profile, whose default inbound action is Block, and Windows *drops* inbound TCP
+rather than refusing it - hence timeouts rather than connection-refused, while
+ICMP still answers.
+
+Confirm from the serving machine: `Test-NetConnection <own-LAN-IP> -Port 1234`
+succeeds locally while the same test fails from anywhere else. That proves the
+service is healthy and the block is inbound-from-network.
+
+Fix it with the script, from an **elevated** PowerShell:
+
+```bash
+& 'N:\local_llm_helper\autostart\allow-lan.ps1'
+```
+
+It adds one scoped rule per port, verifies each is listening and not bound to
+localhost, and takes `-Remove` to undo. Switching the adapter to "Private" also
+works and is one click, but opens file sharing and remote desktop along with it -
+two scoped rules are the smaller change.
+
 **The firewall will block it until you say otherwise.** Both interfaces here are on
 the **Public** profile, where Windows blocks inbound by default. In an
 administrator shell:
