@@ -405,11 +405,18 @@ def main() -> None:
     ap.add_argument("--http", action="store_true", help="Serve over HTTP instead of stdio.")
     ap.add_argument("--host", default="127.0.0.1", help="Bind address for --http.")
     ap.add_argument("--port", type=int, default=8765, help="Port for --http.")
+    ap.add_argument(
+        "--sse", action="store_true",
+        help="Stream tool results over SSE instead of a single JSON response. "
+             "Only useful for debugging; JSON is more robust across a network.",
+    )
     ns = ap.parse_args()
 
     if not ns.http:
         server.run(transport="stdio")
         return
+
+    from .lock import AlreadyRunning, single_instance
 
     print(
         f"local-llm-helper MCP on http://{ns.host}:{ns.port}/mcp\n"
@@ -417,8 +424,33 @@ def main() -> None:
         f"{', '.join(str(r) for r in get_config().paths.read_roots)}",
         flush=True,
     )
-    # host/port are transport kwargs, not server settings, in this SDK version.
-    server.run(transport="streamable-http", host=ns.host, port=ns.port)
+
+    try:
+        # Same trap as the worker and the dashboard. Without this a second copy
+        # fails to bind with WinError 10048 buried in a log nobody reads, while
+        # the first keeps serving — so a restart appears to have happened and
+        # has not. Refuse loudly instead.
+        with single_instance(get_config(), "mcp-http"):
+            # host/port are transport kwargs, not server settings, in this SDK.
+            #
+            # json_response matters once a client is on another machine. The
+            # default streams tool results over SSE, holding a connection open
+            # for the whole call. A handshake takes 0.1 s and survives anything;
+            # a 7 s tool call on a held-open stream is what dies to an idle
+            # timeout or a VPN adapter — and it fails looking like "server
+            # unreachable" moments after the handshake succeeded. A single JSON
+            # response has no such window, and streaming buys nothing for
+            # request/response tools. --sse restores the old behaviour for
+            # debugging.
+            server.run(
+                transport="streamable-http",
+                host=ns.host,
+                port=ns.port,
+                json_response=not ns.sse,
+            )
+    except AlreadyRunning as exc:
+        print(str(exc), flush=True)
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

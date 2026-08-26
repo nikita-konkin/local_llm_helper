@@ -545,6 +545,25 @@ whole network. So:
 
 Option A is the safer default. It shares GPU capacity, not filesystem access.
 
+### When the handshake works but tool calls fail
+
+A distinct failure, and not a network one: `initialize` succeeds and returns a
+session id, then the first `tools/call` reports the server as unreachable. The
+give-away is the timing — a handshake is one fast round trip, a tool call takes
+seconds while the local model works.
+
+The default streamable-HTTP transport returns tool results over an **SSE stream**,
+holding the connection open for the whole call. That window is what an idle
+timeout or a VPN adapter closes, and the client reports it as a connection
+failure moments after a successful handshake. The server is served with
+`json_response=True` instead: one plain JSON response, no held-open stream, and
+nothing lost since these tools are request/response anyway. `--sse` restores
+streaming for debugging.
+
+Only one HTTP server runs at a time, held by `logs/mcp-http.pid`. Without that a
+second copy fails to bind with `WinError 10048` inside a log file nobody reads
+while the first keeps serving, so a restart looks like it happened and did not.
+
 ### The two ports are not interchangeable
 
 | Port | Service | Needed by |
