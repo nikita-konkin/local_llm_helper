@@ -136,6 +136,11 @@
   </section>
 
   <section>
+    <h2>Connect another machine</h2>
+    <div id="connect">—</div>
+  </section>
+
+  <section>
     <h2>Settings</h2>
     <div id="settings"></div>
     <div class="btns">
@@ -251,6 +256,32 @@ async function refresh(fresh) {
   }
 }
 
+async function loadConnect() {
+  try {
+    const c = await get('/api/connect');
+    const warn = c.lan_reachable ? '' :
+      `<div class="row"><span class="bad">${esc(c.note)}</span></div>`;
+    const list = c.addresses.filter(a => a.usable).map(a => {
+      const tag = a.likely_lan ? '<span class="pill ok">likely</span>'
+        : (a.virtual ? '<span class="pill dim">virtual</span>' : '');
+      return `<div class="row"><span class="k"><code>${esc(a.ip)}</code> ${tag}</span>
+        <span class="v sub">${esc(a.interface)}</span></div>`;
+    }).join('');
+    $('connect').innerHTML = warn + `
+      <div class="row"><span class="k">Model API (its own copy, this GPU)</span>
+        <span class="v"><code>${esc(c.model_url)}</code></span></div>
+      <div class="row"><span class="k">MCP over HTTP (this PC's files)</span>
+        <span class="v"><code>${esc(c.mcp_url)}</code></span></div>
+      <div class="row"><span class="k">Listening on</span>
+        <span class="v"><code>${esc(c.bind)}:${c.port}</code></span></div>
+      <div style="margin-top:12px">${list}</div>
+      <div class="note">${c.ambiguous
+        ? 'Several addresses are plausible. Pick the one on the same subnet as the machine you are connecting from — the guess above is a guess.'
+        : ''} The firewall must also allow the port; a Public network profile blocks
+        inbound by default.</div>`;
+  } catch (e) { $('connect').textContent = String(e.message || e); }
+}
+
 let settingsKeys = [];
 async function loadSettings() {
   const s = await get('/api/settings');
@@ -282,8 +313,10 @@ async function saveSettings() {
 }
 
 loadSettings();
+loadConnect();
 refresh();
 setInterval(refresh, 15000);
+setInterval(loadConnect, 60000);
 </script>
 </body>
 </html>

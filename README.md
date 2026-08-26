@@ -148,6 +148,7 @@ llmh prune                             # delete old outbox files
 llmh ui                                # dashboard: status, usage, queue, settings
 llmh server start|stop|restart|status  # the LM Studio model server
 llmh server restart-worker             # after changing code or settings
+llmh connect                           # addresses another machine should use
 ```
 
 Quote glob patterns, or your shell will expand them before `llmh` sees them.
@@ -402,6 +403,15 @@ Mac it fails in milliseconds with `ENOENT`. A stdio server can only be spawned b
 session on the same machine as the executable. For anything else use
 `laptop/mcp-over-http.json`. Full instructions, macOS paths included, are in
 `laptop/README-laptop.md`.
+
+Run `llmh connect` (or open the dashboard) for the exact URLs and this machine's
+addresses. It flags whether the server is actually reachable from the LAN, because
+that is where this most often goes wrong.
+
+**`server.bind` lives in `config.toml` for a reason.** LM Studio does not remember
+a bind address across an explicit stop, so `llmh server restart` silently dropped a
+`0.0.0.0` binding back to `127.0.0.1` and cut off every other machine — a restart
+quietly changing who can reach the model. The setting is now passed on every start.
 
 **A — laptop's own files, this PC's GPU.** The laptop runs `llmhelper`; only the
 model call crosses the network. Use this when the files you want digested live on

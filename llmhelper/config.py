@@ -89,6 +89,12 @@ class ServerCfg:
     lms_exe: Path
     startup_timeout_s: float
     request_timeout_s: float
+    # What to pass `lms server start --bind`. LM Studio does not remember this
+    # across an explicit stop, so a restart silently dropped a 0.0.0.0 binding
+    # back to localhost and cut off every other machine on the network. Keeping
+    # it in config means a restart cannot quietly change who can reach the model.
+    bind: str = "127.0.0.1"
+    port: int = 1234
 
     @property
     def health_url(self) -> str:
@@ -175,6 +181,8 @@ def load_config(path: str | Path | None = None) -> Config:
         lms_exe=Path(_require(srv, "lms_exe", "server")),
         startup_timeout_s=float(srv.get("startup_timeout_s", 240)),
         request_timeout_s=float(srv.get("request_timeout_s", 900)),
+        bind=str(srv.get("bind", "127.0.0.1")),
+        port=int(srv.get("port", 1234)),
     )
 
     pth = raw.get("paths", {})

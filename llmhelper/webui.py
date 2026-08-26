@@ -168,6 +168,36 @@ def api_status(fresh: bool = False) -> dict:
     }
 
 
+@app.get("/api/connect")
+def api_connect() -> dict:
+    """Everything another machine needs to connect to this one."""
+    from .runtime import lan_addresses
+
+    c = cfg()
+    addrs = lan_addresses()
+    best = next((a["ip"] for a in addrs if a.get("likely_lan")), None)
+    reachable = c.server.bind in ("0.0.0.0", "::")
+
+    return {
+        "addresses": addrs,
+        "best": best,
+        "ambiguous": bool(addrs and addrs[0].get("ambiguous")),
+        "bind": c.server.bind,
+        "port": c.server.port,
+        "lan_reachable": reachable,
+        # Option A: the other machine runs its own copy and borrows this GPU.
+        "model_url": f"http://{best or '<this-pc>'}:{c.server.port}/v1",
+        # Option B: the other machine calls this machine's MCP tools over HTTP.
+        "mcp_url": f"http://{best or '<this-pc>'}:8765/mcp",
+        "note": (
+            "Bound to localhost only — no other machine can reach it. Set "
+            'server.bind = "0.0.0.0" in config.toml and restart the server.'
+            if not reachable else
+            "Reachable from the LAN, provided the firewall allows the port."
+        ),
+    }
+
+
 @app.get("/api/stats")
 def api_stats(days: int | None = None, all_sources: bool = False) -> dict:
     return store().savings_summary(days=days, include_synthetic=all_sources)

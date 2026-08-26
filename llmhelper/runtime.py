@@ -81,6 +81,102 @@ class ModelInfo:
         return any(wanted == v.split("@", 1)[-1].lower() for v in self.variants)
 
 
+def lan_addresses() -> list[dict]:
+    """This machine's IPv4 addresses with interface names, most likely LAN first.
+
+    Ordering is the whole point. A developer box can easily have ten interfaces —
+    VPN tunnels, VirtualBox host-only networks, Bluetooth, disconnected Wi-Fi
+    adapters — and only one is the address to give another machine on the desk.
+
+    Note what does *not* work here: asking the OS which address it would route a
+    public packet out of. On this machine that answers with the VPN tunnel, which
+    is exactly wrong for reaching a laptop on the same physical network. Interface
+    names are cruder but honest, so virtual adapters are labelled and demoted
+    rather than silently recommended.
+    """
+    import ipaddress
+    import socket
+
+    # Substrings that mark an interface as not-the-LAN.
+    VIRTUAL = (
+        "virtualbox", "vmware", "hyper-v", "vethernet", "docker", "wsl",
+        "tun", "tap", "vpn", "openvpn", "wireguard", "tailscale", "zerotier",
+        "bluetooth", "loopback", "teredo", "isatap",
+    )
+
+    out: list[dict] = []
+    try:
+        import psutil
+
+        for name, addrs in psutil.net_if_addrs().items():
+            low = name.lower()
+            virtual = any(v in low for v in VIRTUAL)
+            for a in addrs:
+                # Compare the enum, not its string form: str() of psutil's family
+                # gives the numeric value ("-1" for AF_LINK), not the enum name.
+                if getattr(a, "family", None) != socket.AF_INET:
+                    continue
+                try:
+                    addr = ipaddress.IPv4Address(a.address)
+                except ValueError:
+                    continue
+                if addr.is_loopback:
+                    continue
+                out.append(
+                    {
+                        "ip": a.address,
+                        "interface": name,
+                        "virtual": virtual,
+                        # 169.254.x means the adapter never got a DHCP lease:
+                        # present in every listing, never reachable.
+                        "usable": not addr.is_link_local,
+                        "private": addr.is_private,
+                    }
+                )
+    except Exception:  # noqa: BLE001 - address discovery must never break a page
+        return []
+
+    def subnet_rank(ip: str) -> int:
+        """Prefer the ranges a home or office LAN actually uses.
+
+        192.168/16 first: overwhelmingly what consumer routers hand out. 10/8
+        next. 172.16/12 last of the private ranges — technically a LAN range, but
+        in practice usually Docker, Hyper-V or a corporate tunnel, which is
+        exactly the address that will not reach a laptop on the same desk.
+        """
+        if ip.startswith("192.168."):
+            return 0
+        if ip.startswith("10."):
+            return 1
+        return 2
+
+    # Interfaces literally named for physical hardware beat generic ones like
+    # "Local Area Connection 2", which Windows also hands to virtual adapters.
+    def name_rank(name: str) -> int:
+        low = name.lower()
+        return 0 if low.startswith(("ethernet", "wi-fi", "wlan", "en", "eth")) else 1
+
+    out.sort(
+        key=lambda d: (
+            not d["usable"],
+            d["virtual"],
+            not d["private"],
+            subnet_rank(d["ip"]),
+            name_rank(d["interface"]),
+            d["ip"],
+        )
+    )
+
+    # "Likely" is as strong a claim as this deserves. With several plausible
+    # candidates the honest answer is to show them and let a human pick the one
+    # on the same subnet as the machine they are connecting from.
+    plausible = [d for d in out if d["usable"] and not d["virtual"] and d["private"]]
+    for d in out:
+        d["likely_lan"] = bool(plausible) and d is plausible[0]
+        d["ambiguous"] = len(plausible) > 1
+    return out
+
+
 def free_ram_gb() -> float:
     return psutil.virtual_memory().available / GB
 
@@ -157,7 +253,12 @@ class Runtime:
         """Start the server if needed. Returns True once it answers."""
         if self.server_running():
             return True
-        self._lms("server", "start", check=False, timeout=120)
+        self._lms(
+            "server", "start",
+            "--bind", self.cfg.server.bind,
+            "--port", str(self.cfg.server.port),
+            check=False, timeout=120,
+        )
         deadline = time.monotonic() + (wait_s or 60.0)
         while time.monotonic() < deadline:
             if self.server_running():

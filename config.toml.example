@@ -10,6 +10,11 @@
 
 [server]
 base_url          = "http://127.0.0.1:1234/v1"
+# Where LM Studio listens. "0.0.0.0" makes the model reachable from the LAN,
+# which another machine running its own copy needs. Passed on every start, since
+# LM Studio does not remember it across an explicit stop.
+bind              = "127.0.0.1"
+port              = 1234
 lms_exe           = "C:/Users/<you>/.lmstudio/bin/lms.exe"
 # A 59 GB model genuinely takes longer than a few minutes to page in from disk;
 # 240 s was too short and looked like a load failure.

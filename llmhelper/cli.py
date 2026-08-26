@@ -894,6 +894,59 @@ def server_restart_worker() -> None:
     err.print("[yellow]worker started but took no lock — check logs/worker.log[/yellow]")
 
 
+@app.command()
+def connect() -> None:
+    """Show what another machine needs to reach this one."""
+    from .runtime import lan_addresses
+
+    cfg = get_config()
+    addrs = lan_addresses()
+    best = next((a["ip"] for a in addrs if a.get("likely_lan")), None)
+    reachable = cfg.server.bind in ("0.0.0.0", "::")
+
+    console.print(
+        Panel(
+            f"Model API   [bold]http://{best or '<this-pc>'}:{cfg.server.port}/v1[/]\n"
+            f"            for a machine running its own copy of this package\n\n"
+            f"MCP / HTTP  [bold]http://{best or '<this-pc>'}:8765/mcp[/]\n"
+            f"            for a machine calling this PC's tools "
+            f"(start it with autostart/start-mcp-http.cmd)",
+            title="connect another machine",
+            border_style="green" if reachable else "yellow",
+        )
+    )
+
+    if not reachable:
+        err.print(
+            f"[yellow]LM Studio is bound to {cfg.server.bind} — localhost only. "
+            'Set server.bind = "0.0.0.0" in config.toml and run `llmh server '
+            "restart`.[/yellow]"
+        )
+
+    table = Table(header_style="bold")
+    for col in ("address", "interface", ""):
+        table.add_column(col)
+    for a in addrs:
+        if not a["usable"]:
+            continue
+        tag = (
+            "[green]likely[/]" if a.get("likely_lan")
+            else ("[dim]virtual[/]" if a["virtual"] else "")
+        )
+        table.add_row(a["ip"], a["interface"], tag)
+    console.print(table)
+
+    if addrs and addrs[0].get("ambiguous"):
+        console.print(
+            "[dim]Several addresses are plausible. Pick the one on the same subnet "
+            "as the machine you are connecting from — the guess is only a guess.[/dim]"
+        )
+    console.print(
+        "[dim]The firewall must also allow the port. A Public network profile "
+        "blocks inbound by default.[/dim]"
+    )
+
+
 def main() -> None:
     try:
         app()
