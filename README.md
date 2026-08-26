@@ -545,6 +545,21 @@ whole network. So:
 
 Option A is the safer default. It shares GPU capacity, not filesystem access.
 
+### The two ports are not interchangeable
+
+| Port | Service | Needed by |
+|---|---|---|
+| **1234** | LM Studio's model API | a machine running its own copy of this package (option A) |
+| **8765** | this package's MCP server over HTTP | a machine calling *this* PC's tools and reading its files (option B) |
+
+1234 belongs to LM Studio and cannot host the MCP server as well. If your other
+machine only borrows the GPU, 1234 is the only port it needs and 8765 can stay
+closed.
+
+A firewall rule alone is never enough: **something has to be listening**. Port
+8765 has no listener unless `autostart/start-mcp-http.cmd` is running, and an open
+port with nothing behind it times out exactly like a blocked one.
+
 ### Autostart (installed)
 
 Two entries are installed in the Startup folder
@@ -555,6 +570,13 @@ via `autostart\run-hidden.vbs`:
 |---|---|---|
 | `LocalLLMHelper-Server.cmd` | `autostart\start-server.cmd` | LM Studio server, **bound to 127.0.0.1** |
 | `LocalLLMHelper-Worker.cmd` | `autostart\start-worker.cmd` | drains the queue; waits up to 150 s for the server first |
+| `LocalLLMHelper-McpHttp.cmd` | `autostart\start-mcp-http.cmd` | **exposes MCP on 0.0.0.0:8765** - see the warning below |
+
+**The MCP HTTP entry exposes this machine's files to the LAN at every logon.**
+Anything that reaches port 8765 can read everything under `paths.read_roots`,
+with no authentication. That is a deliberate choice, not a default: delete
+`LocalLLMHelper-McpHttp.cmd` from the Startup folder to stop it, and narrow
+`read_roots` to what the other machine actually needs.
 
 Both were tested by running them directly: the server came up on port 1234 and the
 worker picked up a queued job and completed it.
