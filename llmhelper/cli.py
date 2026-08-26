@@ -726,8 +726,16 @@ def stats(
 def prune(
     days: Optional[int] = typer.Option(None, "--days", help="Defaults to config retention."),
     dry_run: bool = typer.Option(False, "--dry-run"),
+    jobs: bool = typer.Option(True, "--jobs/--no-jobs", help="Also drop finished job rows."),
 ) -> None:
-    """Delete outbox files older than the retention window."""
+    """Delete old outbox files, and finished jobs of the same age.
+
+    Job rows were never cleaned up, so the table only grew and the dashboard
+    filled with week-old completed work. Only terminal jobs go; anything queued
+    or running is somebody waiting. The savings ledger is never touched - it is
+    the record of what was offloaded, and a cleanup that quietly shrank it would
+    rewrite the one number worth reporting.
+    """
     import time
 
     cfg = get_config()
@@ -743,7 +751,15 @@ def prune(
             if not dry_run:
                 path.unlink()
     verb = "would remove" if dry_run else "removed"
-    console.print(f"{verb} {removed} file(s), {freed / 1024:.0f} KB")
+    console.print(f"{verb} {removed} outbox file(s), {freed / 1024:.0f} KB")
+
+    if jobs:
+        r = _store().prune_jobs(days or cfg.budgets.result_retention_days, dry_run=dry_run)
+        console.print(
+            f"{verb} {r['jobs']} finished job(s)"
+            + (f" and {r['results']} stored result(s)" if r["results"] else "")
+        )
+        console.print("[dim]the savings ledger is unaffected[/dim]")
 
 
 @app.command()

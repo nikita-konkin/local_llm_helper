@@ -144,7 +144,7 @@ llmh transcribe <audio file>
 llmh submit digest -p <path> -q "..."  # queue it instead
 llmh worker                            # run the background worker
 llmh stats                             # tokens kept out of context
-llmh prune                             # delete old outbox files
+llmh prune                             # delete old outbox files and finished jobs
 llmh ui                                # dashboard: status, usage, queue, settings
 llmh server start|stop|restart|status  # the LM Studio model server
 llmh server restart-worker             # after changing code or settings
@@ -191,6 +191,19 @@ refresh that put ~25 requests a minute into its Developer tab permanently — th
 dashboard becoming the system's main workload. Runtime probes are cached for 20 s
 and the page refreshes every 15 s, which brought it to ~4/min; controls force a
 fresh read so an action's effect still shows immediately.
+
+### Queue versus history
+
+The dashboard separates them, because one list sorted by time reads as "the
+queue is full of week-old jobs" when the queue is in fact empty and that is
+history. **Queue** shows only what is waiting or running; **Recently finished**
+shows what is done, with an age. Nothing in the first is the normal state.
+
+Finished jobs were never cleaned up, so the table only grew. `llmh prune` now
+removes terminal jobs of the same age as the outbox files it deletes. Queued and
+running jobs are never touched, and neither is the savings ledger: it is the
+record of what was actually offloaded, and a cleanup that quietly shrank it would
+rewrite the one number worth reporting.
 
 ### Whose numbers are these?
 

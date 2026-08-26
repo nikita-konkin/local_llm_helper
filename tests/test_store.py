@@ -259,3 +259,70 @@ def test_permanence_can_be_forced_either_way(store: Store):
     jid = store.submit("digest", {}, max_attempts=3)
     store.claim("w1")
     assert store.fail(jid, "LocalLLMError: nope", permanent=True) is JobState.FAILED
+
+
+# ------------------------------------------------------------ job retention
+
+
+def test_prune_removes_only_finished_jobs(store: Store):
+    """Anything queued or running is somebody waiting on an answer."""
+    from datetime import timedelta
+
+    from llmhelper.store import Job, utcnow
+
+    old = utcnow() - timedelta(days=10)
+    done = store.submit("ask", {}, label="finished")
+    store.claim("w1")
+    store.complete(done, "answer")
+    waiting = store.submit("ask", {}, label="still queued")
+
+    with store.session() as s:
+        for jid in (done, waiting):
+            s.get(Job, jid).created_at = old
+
+    result = store.prune_jobs(days=7)
+    assert result["jobs"] == 1
+    assert store.get(done) is None
+    assert store.get(waiting) is not None, "a queued job must survive pruning"
+
+
+def test_prune_keeps_recent_jobs(store: Store):
+    jid = store.submit("ask", {})
+    store.claim("w1")
+    store.complete(jid, "x")
+    assert store.prune_jobs(days=7)["jobs"] == 0
+    assert store.get(jid) is not None
+
+
+def test_prune_never_touches_the_savings_ledger(store: Store):
+    """The ledger is the record of what was offloaded.
+
+    A cleanup that quietly shrank it would rewrite the one number this project
+    exists to report.
+    """
+    from datetime import timedelta
+
+    from llmhelper.store import Job, utcnow
+
+    jid = store.submit("digest", {})
+    store.claim("w1")
+    store.complete(jid, "x")
+    store.record_saving(kind="digest", source="mcp", job_id=jid,
+                        input_tokens=40_000, output_tokens=200)
+    with store.session() as s:
+        s.get(Job, jid).created_at = utcnow() - timedelta(days=30)
+
+    before = store.savings_summary()["tokens_saved"]
+    store.prune_jobs(days=7)
+    assert store.savings_summary()["tokens_saved"] == before
+
+
+def test_active_jobs_excludes_finished(store: Store):
+    done = store.submit("ask", {})
+    store.claim("w1")
+    store.complete(done, "x")
+    queued = store.submit("ask", {})
+
+    ids = [j.id for j in store.active_jobs()]
+    assert queued in ids
+    assert done not in ids

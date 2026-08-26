@@ -344,6 +344,50 @@ class Store:
             rows = s.execute(select(Job.state, func.count()).group_by(Job.state)).all()
         return {state: n for state, n in rows}
 
+    def prune_jobs(self, days: int, dry_run: bool = False) -> dict:
+        """Delete finished jobs older than `days`, and their results.
+
+        Nothing removed these before, so the table only ever grew and the
+        dashboard filled with week-old completed work under a heading that says
+        "Queue". Only terminal states go: anything queued or running is somebody
+        waiting on an answer.
+
+        Savings rows are deliberately kept. They are the ledger - the record of
+        what was actually offloaded - and losing them to a cleanup would quietly
+        rewrite the one number this project exists to report.
+        """
+        from sqlalchemy import delete
+
+        cutoff = utcnow() - timedelta(days=days)
+        terminal = (JobState.DONE, JobState.FAILED, JobState.CANCELLED)
+        with self.session() as s:
+            doomed = [
+                r[0] for r in s.execute(
+                    select(Job.id).where(
+                        Job.state.in_(terminal), Job.created_at < cutoff
+                    )
+                ).all()
+            ]
+            if not doomed or dry_run:
+                return {"jobs": len(doomed), "results": 0, "dry_run": dry_run}
+
+            results = s.execute(
+                delete(Result).where(Result.job_id.in_(doomed))
+            ).rowcount
+            jobs = s.execute(delete(Job).where(Job.id.in_(doomed))).rowcount
+        return {"jobs": jobs, "results": results, "dry_run": False}
+
+    def active_jobs(self) -> list[Job]:
+        """Jobs someone is still waiting on."""
+        with self.session() as s:
+            return list(
+                s.execute(
+                    select(Job)
+                    .where(Job.state.in_((JobState.QUEUED, JobState.RUNNING)))
+                    .order_by(Job.priority.asc(), Job.created_at.asc())
+                ).scalars()
+            )
+
     def requeue_stale_running(self) -> int:
         """Recover jobs a killed worker left mid-flight."""
         with self.session() as s:

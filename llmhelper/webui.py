@@ -204,8 +204,28 @@ def api_stats(days: int | None = None, all_sources: bool = False) -> dict:
 
 
 @app.get("/api/jobs")
-def api_jobs(limit: int = 25, state: str | None = None) -> list[dict]:
-    return [j.as_dict() for j in store().list_jobs(state=state, limit=limit)]
+def api_jobs(limit: int = 25, state: str | None = None) -> dict:
+    """Work in progress and finished work, kept apart.
+
+    A single list sorted by time reads as "the queue is full of week-old jobs"
+    when in fact the queue is empty and that is history. Splitting them makes
+    "is anything running?" answerable at a glance.
+    """
+    s = store()
+    active = [j.as_dict() for j in s.active_jobs()]
+    active_ids = {j["id"] for j in active}
+    recent = [
+        j.as_dict()
+        for j in s.list_jobs(state=state, limit=limit)
+        if j.id not in active_ids
+    ]
+    return {"active": active, "recent": recent}
+
+
+@app.post("/api/jobs/prune")
+def api_prune_jobs(days: int = 7) -> dict:
+    """Delete finished jobs older than `days`. Savings rows are never touched."""
+    return store().prune_jobs(days)
 
 
 @app.get("/api/job/{job_id}")

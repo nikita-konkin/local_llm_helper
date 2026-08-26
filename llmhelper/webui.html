@@ -130,9 +130,19 @@
   <section>
     <h2>Queue</h2>
     <div class="sub" id="q-counts" style="margin-bottom:10px">—</div>
-    <div class="scroll"><table id="jobs">
+    <div class="scroll"><table id="jobs-active">
       <thead><tr><th>id</th><th>kind</th><th>state</th><th>label</th><th></th></tr></thead>
       <tbody></tbody></table></div>
+
+    <h2 style="margin-top:18px">Recently finished</h2>
+    <div class="scroll"><table id="jobs-recent">
+      <thead><tr><th>id</th><th>kind</th><th>state</th><th>when</th><th>label</th></tr></thead>
+      <tbody></tbody></table></div>
+    <div class="btns">
+      <button onclick="confirmPost('/api/jobs/prune?days=7','Delete finished jobs older than 7 days? The savings ledger is not affected.')">Clear finished older than 7d</button>
+    </div>
+    <div class="note">Finished jobs are history, not queue. Nothing here means
+      nothing is waiting - which is the normal state.</div>
   </section>
 
   <section>
@@ -154,6 +164,14 @@
 <script>
 const $ = id => document.getElementById(id);
 const fmt = n => (n ?? 0).toLocaleString();
+const ago = iso => {
+  if (!iso) return '';
+  const s = Math.max(0, (Date.now() - Date.parse(iso + (iso.endsWith('Z') ? '' : 'Z'))) / 1000);
+  if (s < 90) return Math.round(s) + 's ago';
+  if (s < 5400) return Math.round(s / 60) + 'm ago';
+  if (s < 172800) return Math.round(s / 3600) + 'h ago';
+  return Math.round(s / 86400) + 'd ago';
+};
 const esc = t => String(t ?? '').replace(/[&<>"']/g,
   c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let flashTimer;
@@ -236,17 +254,23 @@ async function refresh(fresh) {
       : '<tr class="muted-row"><td colspan="4">no MCP calls recorded yet</td></tr>';
 
     const jobs = await get('/api/jobs?limit=12');
-    $('jobs').querySelector('tbody').innerHTML = jobs.length ? jobs.map(j => {
-      const cls = {done:'ok', failed:'bad', running:'warn'}[j.state] || 'dim';
-      const cancel = ['queued','running'].includes(j.state)
-        ? `<button onclick="post('/api/job/${j.id}/cancel')">cancel</button>` : '';
-      const err = j.error
-        ? `<div class="err-line" title="${esc(j.error)}">${esc(j.error).slice(0,110)}</div>` : '';
-      return `<tr><td><code>${j.id.slice(0,8)}</code></td><td>${j.kind}</td>
-        <td>${pill(j.state, cls)}</td>
-        <td>${esc((j.label||'').slice(0,44))}${err}</td>
-        <td class="n">${cancel}</td></tr>`;
-    }).join('') : '<tr class="muted-row"><td colspan="5">queue empty</td></tr>';
+    const cls = st => ({done:'ok', failed:'bad', running:'warn'}[st] || 'dim');
+    const errLine = j => j.error
+      ? `<div class="err-line" title="${esc(j.error)}">${esc(j.error).slice(0,110)}</div>` : '';
+
+    $('jobs-active').querySelector('tbody').innerHTML = jobs.active.length
+      ? jobs.active.map(j => `<tr><td><code>${j.id.slice(0,8)}</code></td>
+          <td>${j.kind}</td><td>${pill(j.state, cls(j.state))}</td>
+          <td>${esc((j.label||'').slice(0,44))}${errLine(j)}</td>
+          <td class="n"><button onclick="post('/api/job/${j.id}/cancel')">cancel</button></td></tr>`).join('')
+      : '<tr class="muted-row"><td colspan="5">nothing queued or running</td></tr>';
+
+    $('jobs-recent').querySelector('tbody').innerHTML = jobs.recent.length
+      ? jobs.recent.map(j => `<tr><td><code>${j.id.slice(0,8)}</code></td>
+          <td>${j.kind}</td><td>${pill(j.state, cls(j.state))}</td>
+          <td class="sub">${ago(j.finished_at || j.created_at)}</td>
+          <td>${esc((j.label||'').slice(0,40))}${errLine(j)}</td></tr>`).join('')
+      : '<tr class="muted-row"><td colspan="5">no history</td></tr>';
 
     const dbh = $('db-host'); if (dbh) dbh.textContent = esc(s.host) + "'s";
     $('tick').textContent = 'updated ' + new Date().toLocaleTimeString();
