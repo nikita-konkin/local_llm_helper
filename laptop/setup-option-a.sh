@@ -76,12 +76,60 @@ else
 fi
 
 say "3. virtualenv"
-if [ ! -d .venv ]; then
-  "$PY" -m venv .venv || { fail "could not create .venv"; exit 1; }
+
+# A half-created .venv from a failed attempt makes every retry fail the same
+# way, which reads as the problem being permanent when it is leftovers.
+if [ -d .venv ] && [ ! -x .venv/bin/python ]; then
+  info "removing an incomplete .venv from a previous attempt"
+  rm -rf .venv
 fi
-.venv/bin/python -m pip install --quiet --upgrade pip
-.venv/bin/pip install --quiet mcp httpx sqlalchemy typer rich tiktoken psutil \
-  || { fail "dependency install failed"; exit 1; }
+
+VENV_ERR=""
+if [ ! -d .venv ]; then
+  VENV_ERR="$("$PY" -m venv .venv 2>&1)" || {
+    # ensurepip is the usual failure on macOS: some Python builds ship without
+    # it, and some are left broken by a Homebrew upgrade. Building the venv
+    # without pip and bootstrapping it afterwards gets past both.
+    info "standard venv creation failed, trying without pip"
+    rm -rf .venv
+    if "$PY" -m venv --without-pip .venv 2>/dev/null; then
+      if curl -s --max-time 30 https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py 2>/dev/null          && .venv/bin/python /tmp/get-pip.py --quiet 2>/dev/null; then
+        rm -f /tmp/get-pip.py
+        pass "venv created, pip bootstrapped separately"
+      else
+        rm -f /tmp/get-pip.py
+        fail "could not bootstrap pip into the venv"
+        info "the original error was:"
+        printf '%s
+' "$VENV_ERR" | tail -6 | sed 's/^/        /'
+        info ""
+        info "most likely your Python is missing ensurepip. Try:"
+        info "  brew install python@3.12   # or reinstall it"
+        info "  ${PY} -m ensurepip --version"
+        exit 1
+      fi
+    else
+      fail "could not create .venv"
+      info "the error was:"
+      printf '%s
+' "$VENV_ERR" | tail -8 | sed 's/^/        /'
+      info ""
+      info "check the interpreter itself is sound:"
+      info "  ${PY} -m ensurepip --version"
+      info "  ${PY} -m venv --help"
+      exit 1
+    fi
+  }
+fi
+[ -x .venv/bin/python ] || { fail ".venv exists but has no interpreter"; exit 1; }
+
+.venv/bin/python -m pip install --quiet --upgrade pip 2>/dev/null
+if ! .venv/bin/pip install --quiet mcp httpx sqlalchemy typer rich tiktoken psutil; then
+  fail "dependency install failed"
+  info "retrying loudly so the reason is visible:"
+  .venv/bin/pip install mcp httpx sqlalchemy typer rich tiktoken psutil 2>&1 | tail -12 | sed 's/^/        /'
+  exit 1
+fi
 pass "$(.venv/bin/python -c 'import mcp, httpx, sqlalchemy, typer, rich, tiktoken, psutil; print("dependencies installed")')"
 
 # Importable from any working directory, so the MCP server starts no matter
