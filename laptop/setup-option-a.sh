@@ -26,6 +26,20 @@ pass() { printf '  \033[32mok\033[0m    %s\n' "$1"; }
 fail() { printf '  \033[31mFAIL\033[0m  %s\n' "$1"; }
 info() { printf '        %s\n' "$1"; }
 
+say "0. not as root"
+# sudo is not needed and actively harmful here. Everything this touches lives in
+# your home directory: a venv, a config file, a jobs database. Created as root
+# they end up owned by root, and Claude Code - which runs as you - then cannot
+# write the database or the outbox. The failure appears much later, as a
+# permission error from something unrelated.
+if [ "$(id -u)" -eq 0 ]; then
+  fail "do not run this with sudo"
+  info "it needs no elevation, and root-owned files here break the install later."
+  info "run it as yourself:  ./laptop/setup-option-a.sh ${HOST}"
+  exit 1
+fi
+pass "running as $(id -un)"
+
 say "1. python"
 PY=""
 for cand in python3.13 python3.12 python3.11 python3; do

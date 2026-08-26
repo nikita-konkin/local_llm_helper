@@ -1,0 +1,24 @@
+# Shell scripts must keep LF endings on every platform.
+#
+# A .sh file checked out with CRLF has a shebang reading "#!/usr/bin/env bash\r".
+# The kernel then looks for an interpreter literally named "bash\r", does not
+# find one, and reports:
+#
+#     ./script.sh: command not found
+#
+# which points at the script rather than at its line endings and is why this
+# wastes people's time. Authoring on Windows and running on macOS hits it every
+# time without this file.
+*.sh text eol=lf
+*.bash text eol=lf
+
+# Same reasoning in reverse: Windows batch files want CRLF.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# PowerShell 5.1 reads .ps1 as ANSI unless there is a BOM, so keep these ASCII
+# and CRLF to match the platform that runs them.
+*.ps1 text eol=crlf
+
+# Leave everything else to git's own detection.
+* text=auto
