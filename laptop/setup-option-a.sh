@@ -77,57 +77,64 @@ fi
 
 say "3. virtualenv"
 
+# An already-activated environment is the usual reason ensurepip works standalone
+# but fails inside a fresh venv: VIRTUAL_ENV, PYTHONHOME and PYTHONPATH leak into
+# the child interpreter and it bootstraps against the wrong prefix. Stripping
+# them for the venv commands costs nothing and removes the whole class.
+if [ -n "${VIRTUAL_ENV:-}" ] || [ -n "${CONDA_PREFIX:-}" ]; then
+  info "an environment is active (${VIRTUAL_ENV:-$CONDA_PREFIX})"
+  info "creating the venv with it stripped out"
+fi
+CLEAN="env -u VIRTUAL_ENV -u PYTHONHOME -u PYTHONPATH -u CONDA_PREFIX"
+
 # A half-created .venv from a failed attempt makes every retry fail the same
-# way, which reads as the problem being permanent when it is leftovers.
+# way, which reads as permanent when it is leftovers.
 if [ -d .venv ] && [ ! -x .venv/bin/python ]; then
   info "removing an incomplete .venv from a previous attempt"
   rm -rf .venv
 fi
 
-VENV_ERR=""
 if [ ! -d .venv ]; then
-  VENV_ERR="$("$PY" -m venv .venv 2>&1)" || {
-    # ensurepip is the usual failure on macOS: some Python builds ship without
-    # it, and some are left broken by a Homebrew upgrade. Building the venv
-    # without pip and bootstrapping it afterwards gets past both.
-    info "standard venv creation failed, trying without pip"
+  if ! $CLEAN "$PY" -m venv .venv 2>/tmp/venv.err; then
+    info "venv with pip failed; creating without it and bootstrapping pip"
     rm -rf .venv
-    if "$PY" -m venv --without-pip .venv 2>/dev/null; then
-      if curl -s --max-time 30 https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py 2>/dev/null          && .venv/bin/python /tmp/get-pip.py --quiet 2>/dev/null; then
-        rm -f /tmp/get-pip.py
-        pass "venv created, pip bootstrapped separately"
-      else
-        rm -f /tmp/get-pip.py
-        fail "could not bootstrap pip into the venv"
-        info "the original error was:"
-        printf '%s
-' "$VENV_ERR" | tail -6 | sed 's/^/        /'
-        info ""
-        info "most likely your Python is missing ensurepip. Try:"
-        info "  brew install python@3.12   # or reinstall it"
-        info "  ${PY} -m ensurepip --version"
-        exit 1
-      fi
-    else
-      fail "could not create .venv"
-      info "the error was:"
-      printf '%s
-' "$VENV_ERR" | tail -8 | sed 's/^/        /'
-      info ""
-      info "check the interpreter itself is sound:"
-      info "  ${PY} -m ensurepip --version"
-      info "  ${PY} -m venv --help"
+    if ! $CLEAN "$PY" -m venv --without-pip .venv 2>>/tmp/venv.err; then
+      fail "could not create a virtualenv at all"
+      sed 's/^/        /' /tmp/venv.err | tail -10
       exit 1
     fi
-  }
+  fi
 fi
-[ -x .venv/bin/python ] || { fail ".venv exists but has no interpreter"; exit 1; }
+[ -x .venv/bin/python ] || { fail ".venv has no interpreter"; exit 1; }
 
-.venv/bin/python -m pip install --quiet --upgrade pip 2>/dev/null
-if ! .venv/bin/pip install --quiet mcp httpx sqlalchemy typer rich tiktoken psutil; then
+# pip may be missing either because we used --without-pip or because ensurepip
+# failed inside the venv. Try the cheap route first, then the network one, and
+# show what went wrong instead of hiding it.
+if ! .venv/bin/python -m pip --version >/dev/null 2>&1; then
+  info "no pip in the venv - bootstrapping"
+  if $CLEAN .venv/bin/python -m ensurepip --upgrade --default-pip >/tmp/pip.err 2>&1; then
+    pass "pip bootstrapped with ensurepip"
+  elif curl -fsS --max-time 60 https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py        && $CLEAN .venv/bin/python /tmp/get-pip.py --quiet >>/tmp/pip.err 2>&1; then
+    pass "pip bootstrapped with get-pip.py"
+  else
+    fail "could not get pip into the venv"
+    info "what was tried, and what it said:"
+    sed 's/^/        /' /tmp/pip.err | tail -12
+    info ""
+    info "if this persists, deactivate the active environment first:"
+    info "  deactivate                       # or: conda deactivate"
+    info "  rm -rf .venv && bash ./laptop/setup-option-a.sh ${HOST}"
+    exit 1
+  fi
+  rm -f /tmp/get-pip.py
+fi
+pass "pip $(.venv/bin/python -m pip --version 2>/dev/null | awk '{print $2}')"
+
+$CLEAN .venv/bin/python -m pip install --quiet --upgrade pip >/dev/null 2>&1
+if ! $CLEAN .venv/bin/python -m pip install --quiet        mcp httpx sqlalchemy typer rich tiktoken psutil; then
   fail "dependency install failed"
   info "retrying loudly so the reason is visible:"
-  .venv/bin/pip install mcp httpx sqlalchemy typer rich tiktoken psutil 2>&1 | tail -12 | sed 's/^/        /'
+  $CLEAN .venv/bin/python -m pip install     mcp httpx sqlalchemy typer rich tiktoken psutil 2>&1 | tail -12 | sed 's/^/        /'
   exit 1
 fi
 pass "$(.venv/bin/python -c 'import mcp, httpx, sqlalchemy, typer, rich, tiktoken, psutil; print("dependencies installed")')"
