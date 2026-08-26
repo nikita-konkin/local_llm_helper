@@ -120,8 +120,14 @@ class Worker:
         )
         return True
 
-    def run_forever(self, idle_unload_after_s: float = 900.0) -> None:
-        """Poll until stopped, releasing the model after a long idle stretch."""
+    def run_forever(self, idle_unload_after_s: float | None = None) -> None:
+        """Poll until stopped, releasing the model after a long idle stretch.
+
+        Set worker.idle_unload_after_s = 0 to keep it loaded: a remote client
+        cannot load models, so unloading here silently costs it context.
+        """
+        if idle_unload_after_s is None:
+            idle_unload_after_s = self.cfg.worker.idle_unload_after_s
         recovered = self.store.requeue_stale_running()
         if recovered:
             self.on_event(f"requeued {recovered} job(s) left running by a previous worker")

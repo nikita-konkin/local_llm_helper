@@ -128,6 +128,12 @@ class WorkerCfg:
     poll_interval_s: float
     max_attempts: int
     fallback_tier: str
+    # Seconds of idle before the worker releases the resident model. 0 keeps it
+    # loaded indefinitely, which is what a remote client needs: it cannot load
+    # models itself, so once this unloads, the next request JIT-loads at LM
+    # Studio's default context instead of the tier's - quietly shrinking the
+    # window a laptop gets from 131072 to 8192.
+    idle_unload_after_s: float = 900.0
 
 
 @dataclass(frozen=True)
@@ -216,6 +222,7 @@ def load_config(path: str | Path | None = None) -> Config:
         poll_interval_s=float(wrk.get("poll_interval_s", 2.0)),
         max_attempts=int(wrk.get("max_attempts", 3)),
         fallback_tier=wrk.get("fallback_tier", "fast"),
+        idle_unload_after_s=float(wrk.get("idle_unload_after_s", 900.0)),
     )
 
     tiers: dict[str, Tier] = {}
