@@ -16,6 +16,21 @@ same machine as the executable.
 
 ---
 
+## Test before wiring it in
+
+```bash
+./test-connection.sh 192.168.50.32
+```
+
+Checks reachability, both ports, the MCP handshake and — the part that actually
+matters — a real tool call. Claude Code stops retrying a server that failed
+earlier in a session, so proving the path with curl first means a retry is spent
+on something already known to work rather than on a hypothesis.
+
+The handshake is not evidence. It is one fast round trip and survives almost
+anything; a tool call runs for seconds while the model works, and that is the
+part which fails. Any test that stops at "handshake succeeded" proves nothing.
+
 ## Option B — use the desktop's files from the laptop
 
 Save `mcp-over-http.json` as `.mcp.json` in a project folder on the laptop:
