@@ -71,30 +71,34 @@ files.
 
 ---
 
-## Option A — use the laptop's own files, on the desktop's GPU
+## Option A - the laptop's own files, the desktop's GPU  (recommended)
 
-Install the package on the laptop. Only the model call crosses the network, and no
-filesystem is exposed, which makes this the safer option.
+Your files stay here and are read here. Only the model call crosses the network,
+so no filesystem is exposed. This is what you want when the work is on this
+machine: option B hands you tools that read the *desktop's* disk, where a path
+from a repo on this laptop does not exist at all.
+
+Get a copy of the repo onto this machine, then:
 
 ```bash
-git clone <this repo> ~/local_llm_helper && cd ~/local_llm_helper
-python3 -m venv .venv
-.venv/bin/pip install mcp httpx sqlalchemy typer rich tiktoken psutil
-echo "$PWD" > .venv/lib/python3*/site-packages/llmhelper.pth
+cd ~/local_llm_helper
+./laptop/setup-option-a.sh 192.168.50.32
 ```
 
-Then edit `config.toml` for the laptop:
+It checks Python, confirms the desktop is reachable and lists its models, builds
+a venv, writes `config.toml`, and finishes by running a real generation against
+the desktop's GPU. A pass means the whole chain works, not that files were
+created.
+
+Then edit one line in `config.toml`:
 
 ```toml
-[server]
-base_url = "http://DESKTOP-LAN-IP:1234/v1"
-lms_exe  = "/usr/local/bin/lms"          # need not exist; see below
-
-[paths]
-read_roots = ["/Users/you/projects"]      # the laptop's own files
+read_roots = ["/Users/you/projects"]
 ```
 
-Register it as a stdio server on the laptop — note the macOS interpreter path:
+That is the security boundary: the only directories the local model may read.
+
+Finally save this as `.mcp.json` in a project folder, and restart Claude Code:
 
 ```json
 {
@@ -107,13 +111,19 @@ Register it as a stdio server on the laptop — note the macOS interpreter path:
 }
 ```
 
-The desktop must publish LM Studio to the LAN for this
-(`lms server start --bind 0.0.0.0`, plus a firewall rule for port 1234), and have
-the model you want already loaded.
+This is a stdio server, so Claude Code launches it here and `local_digest` reads
+this machine's filesystem. That is the whole point of option A.
 
-**`lms_exe` not existing is fine and handled.** Without LM Studio's CLI the client
-runs in remote mode: it does not try to load, unload or enumerate models, and
-leaves residency to whichever machine actually runs the server. `llmh doctor` will
-report the CLI as missing — that is accurate, not a failure. Verified by running a
-full digest with the CLI path pointed at a file that does not exist: it selected a
-tier, produced a correctly cited answer, and never touched a local binary.
+### Two things that will surprise you
+
+**`lms_exe` points at a file that does not exist, deliberately.** Without LM
+Studio's CLI the client runs in *remote mode*: it does not try to load, unload or
+enumerate models, and leaves residency to the machine actually serving. `llmh
+doctor` reporting the CLI as missing is accurate, not a fault.
+
+**The tier declares an 8192 context, not 131072.** This machine cannot load a
+model, so if nothing is resident on the desktop LM Studio JIT-loads at *its* own
+default, which is 8192. Claiming more here would size chunks for a window you
+may not get, and it surfaces as "Context size has been exceeded" rather than
+anything that points at the cause. For the bigger window, load the model on the
+desktop first and raise this number to match.
