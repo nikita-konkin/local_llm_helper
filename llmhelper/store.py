@@ -377,6 +377,35 @@ class Store:
             jobs = s.execute(delete(Job).where(Job.id.in_(doomed))).rowcount
         return {"jobs": jobs, "results": results, "dry_run": False}
 
+    def recent_activity(self, limit: int = 15, include_synthetic: bool = False) -> list[dict]:
+        """The last N offloaded calls, whichever lane they came through.
+
+        Express calls - local_digest, local_grep, local_ask, local_review - run
+        synchronously and never create a job, so a dashboard that only shows the
+        queue shows nothing while the thing is being used constantly. This is the
+        view that answers "is it doing anything?".
+        """
+        with self.session() as s:
+            q = select(Saving).order_by(Saving.id.desc()).limit(limit)
+            if not include_synthetic:
+                q = q.where(Saving.source.notin_(self.SYNTHETIC_SOURCES))
+            return [
+                {
+                    "at": r.at.isoformat() if r.at else None,
+                    "kind": r.kind,
+                    "source": r.source,
+                    "tier": r.tier,
+                    "client": r.client,
+                    "input_tokens": r.input_tokens,
+                    "output_tokens": r.output_tokens,
+                    "saved": r.saved,
+                    "duration_s": round(r.duration_s, 1),
+                    # An express call has no job to look up; a queued one does.
+                    "job_id": r.job_id,
+                }
+                for r in s.execute(q).scalars()
+            ]
+
     def active_jobs(self) -> list[Job]:
         """Jobs someone is still waiting on."""
         with self.session() as s:

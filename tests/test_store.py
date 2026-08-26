@@ -326,3 +326,45 @@ def test_active_jobs_excludes_finished(store: Store):
     ids = [j.id for j in store.active_jobs()]
     assert queued in ids
     assert done not in ids
+
+
+# ---------------------------------------------------------- recent activity
+
+
+def test_recent_activity_shows_express_calls_that_never_became_jobs(store: Store):
+    """The dashboard's queue was empty during heavy use, which looked like a fault.
+
+    local_digest and friends run synchronously and record only a savings row, so
+    a queue-only view shows nothing while the tool is being hammered. This is the
+    view that makes express work visible.
+    """
+    store.record_saving(kind="digest", source="mcp", client=r"N:\some-project",
+                        input_tokens=36_306, output_tokens=1_974, duration_s=1076.6)
+
+    (row,) = store.recent_activity()
+    assert row["kind"] == "digest"
+    assert row["client"] == r"N:\some-project"
+    assert row["input_tokens"] == 36_306
+    assert row["job_id"] is None, "an express call has no job to point at"
+
+
+def test_recent_activity_is_newest_first_and_respects_the_limit(store: Store):
+    for i in range(5):
+        store.record_saving(kind="ask", source="mcp", input_tokens=i)
+
+    rows = store.recent_activity(limit=3)
+    assert [r["input_tokens"] for r in rows] == [4, 3, 2]
+
+
+def test_recent_activity_hides_measurement_traffic_by_default(store: Store):
+    store.record_saving(kind="digest", source="mcp", input_tokens=100)
+    store.record_saving(kind="digest", source="bench", input_tokens=200)
+
+    assert [r["source"] for r in store.recent_activity()] == ["mcp"]
+    assert len(store.recent_activity(include_synthetic=True)) == 2
+
+
+def test_recent_activity_carries_the_job_id_for_queued_work(store: Store):
+    jid = store.submit("digest", {})
+    store.record_saving(kind="digest", source="worker", job_id=jid, input_tokens=9_000)
+    assert store.recent_activity()[0]["job_id"] == jid

@@ -203,6 +203,12 @@ def api_stats(days: int | None = None, all_sources: bool = False) -> dict:
     return store().savings_summary(days=days, include_synthetic=all_sources)
 
 
+@app.get("/api/activity")
+def api_activity(limit: int = 15, all_sources: bool = False) -> list[dict]:
+    """The last N offloaded calls, express and queued alike."""
+    return store().recent_activity(limit=limit, include_synthetic=all_sources)
+
+
 @app.get("/api/jobs")
 def api_jobs(limit: int = 25, state: str | None = None) -> dict:
     """Work in progress and finished work, kept apart.
