@@ -180,6 +180,22 @@ MARKUP_SUFFIXES = {".html", ".htm", ".xhtml"}
 EXTRACTABLE_SUFFIXES = frozenset(EXTRACTORS) | MARKUP_SUFFIXES
 
 
+# Extraction is not cheap - up to a minute on a 900-page book - and it happens
+# twice: once when the MCP layer sizes the request, once when the handler runs it.
+# Keyed on mtime and size so an edited file is re-read. Small, because these
+# strings can be megabytes.
+_CACHE: dict[tuple, str] = {}
+_CACHE_MAX = 4
+
+
+def _cache_key(path: Path) -> tuple | None:
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return (str(path), st.st_mtime_ns, st.st_size)
+
+
 def extractable(path: str | Path) -> bool:
     return Path(path).suffix.lower() in EXTRACTABLE_SUFFIXES
 
@@ -198,7 +214,16 @@ def extract(path: str | Path, raw_text: str | None = None) -> str:
     extractor = EXTRACTORS.get(suffix)
     if extractor is None:
         raise ExtractError(f"no extractor for {suffix or 'this file'}")
+
+    key = _cache_key(target)
+    if key is not None and key in _CACHE:
+        return _CACHE[key]
+
     text = extractor(target)
+    if key is not None:
+        if len(_CACHE) >= _CACHE_MAX:
+            _CACHE.pop(next(iter(_CACHE)))
+        _CACHE[key] = text
     if not text.strip():
         raise ExtractError(f"{target.name} contained no extractable text")
     return text

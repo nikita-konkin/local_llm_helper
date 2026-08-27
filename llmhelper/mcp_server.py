@@ -139,8 +139,16 @@ def _precheck(paths: list[str]) -> tuple[int, int, str | None]:
     total = 0
     for f in files:
         try:
-            total += max(1, f.stat().st_size // 4)  # bytes/4 approximates tokens
-        except OSError:
+            if extractable(f):
+                # bytes/4 is meaningless for a document: a PDF is mostly compressed
+                # streams and embedded fonts. Measured, a 635 KB PDF holding about
+                # 6,000 tokens of text was sized at 158,725 and refused as too large
+                # for a synchronous call. Extract and count it properly - the result
+                # is cached, so the handler does not pay for it twice.
+                total += count_tokens(read_text(f, cfg=cfg))
+            else:
+                total += max(1, f.stat().st_size // 4)  # bytes/4 approximates tokens
+        except Exception:  # noqa: BLE001 - an unsizable file is not fatal here
             continue
 
     if total > EXPRESS_SOURCE_LIMIT:
