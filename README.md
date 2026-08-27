@@ -356,6 +356,35 @@ exactly that string as a variant. Loads use the bare model key; `quant` in
 `config.toml` is only used to match the catalogue, so a 20 GB Q4 is never confused
 with a 66 GB BF16.
 
+### A search that lost the answer three ways at once
+
+A search for where read roots are enforced returned 40 matches on `fast` and
+reported that none of them answered it. The answer was at `guard.py:95`. Three
+independent defects stacked up:
+
+1. **The hit cap truncated the corpus in directory order.** `_scan` stopped
+   walking at `max_hits`, so broad patterns matching often in `cli.py` used all 40
+   slots before `guard.py` was opened. The answer was reported absent from a file
+   that was never read. Fixed by scanning every file and sharing the budget
+   round-robin, ranking each file's hits by how many distinct patterns they match.
+2. **Zero survivors was reported as a confident negative.** The raw hits went into
+   `detail`, but the express lane returns `summary` — so the evidence was in the
+   result and the summary contradicted it. Now the hits come back unranked with
+   the triage miss named as the likely cause.
+3. **`startswith("YES")` read `**YES**: ...` as a rejection.**
+
+The general lesson, which cost time twice: *a component that silently narrows its
+own input produces a confident wrong answer.* The same shape appeared in `_scan`
+swallowing unreadable files, and in the size check below.
+
+### Sizing a document by its bytes
+
+The express lane estimated tokens as `file size / 4`. That is fine for text and
+meaningless for a document: a 635 KB PDF holding 8,463 tokens of prose was sized
+at 158,725 and refused as too large to run synchronously. Extractable files are
+now extracted and counted, with the result cached so the handler does not repeat
+the work.
+
 ## Using it from other projects and other machines
 
 ### In another Claude Code project on this PC
