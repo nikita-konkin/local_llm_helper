@@ -19,6 +19,7 @@ from collections.abc import Iterable, Iterator
 from pathlib import Path
 
 from .config import Config, get_config
+from .extract import MARKUP_SUFFIXES, extract, extractable
 
 _SLUG = re.compile(r"[^a-z0-9]+")
 
@@ -120,7 +121,14 @@ def resolve_write(path: str | Path, cfg: Config | None = None) -> Path:
 
 
 def looks_binary(path: Path) -> bool:
-    """Cheap text/binary sniff: known suffix, or a NUL byte in the first 8 KB."""
+    """Cheap text/binary sniff: known suffix, or a NUL byte in the first 8 KB.
+
+    "Binary" here means "no text can be got out of it", not "the bytes are not
+    ASCII". A PDF is binary on disk and prose underneath, so anything with an
+    extractor is readable as far as callers are concerned.
+    """
+    if extractable(path):
+        return False
     if path.suffix.lower() in _BINARY_SUFFIXES:
         return True
     try:
@@ -137,13 +145,23 @@ def read_text(path: str | Path, max_bytes: int | None = None, cfg: Config | None
     a giant log is still useful, and the caller records the truncation.
     """
     target = resolve_read(path, cfg)
+
+    # Documents are extracted whole: a PDF truncated mid-stream is unparseable,
+    # so max_bytes is applied to the resulting text instead of the raw file.
+    if extractable(target) and target.suffix.lower() not in MARKUP_SUFFIXES:
+        text = extract(target)
+        return text[:max_bytes] if max_bytes is not None else text
+
     raw = target.read_bytes() if max_bytes is None else target.open("rb").read(max_bytes)
     for encoding in ("utf-8", "utf-8-sig", "cp1251", "cp1252", "latin-1"):
         try:
-            return raw.decode(encoding)
+            decoded = raw.decode(encoding)
+            break
         except UnicodeDecodeError:
             continue
-    return raw.decode("utf-8", errors="replace")
+    else:
+        decoded = raw.decode("utf-8", errors="replace")
+    return extract(target, decoded) if extractable(target) else decoded
 
 
 def expand(

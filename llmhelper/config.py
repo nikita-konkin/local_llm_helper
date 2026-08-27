@@ -9,7 +9,6 @@ from __future__ import annotations
 import os
 import tomllib
 from dataclasses import dataclass, field
-from functools import lru_cache
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -248,7 +247,54 @@ def load_config(path: str | Path | None = None) -> Config:
     return Config(server=server, paths=paths, budgets=budgets, worker=worker, tiers=tiers)
 
 
-@lru_cache(maxsize=1)
+_cache: tuple[tuple, Config] | None = None
+
+
+def _stamp(path: Path) -> tuple:
+    """Cheap identity for the config file: path, mtime, size."""
+    try:
+        st = path.stat()
+        return (str(path), st.st_mtime_ns, st.st_size)
+    except OSError:
+        return (str(path), 0, 0)
+
+
+def config_path() -> Path:
+    return Path(os.environ.get("LLMHELPER_CONFIG", DEFAULT_CONFIG))
+
+
+def invalidate() -> None:
+    """Force the next get_config() to re-read from disk."""
+    global _cache
+    _cache = None
+
+
 def get_config() -> Config:
-    """Process-wide cached config."""
-    return load_config()
+    """Process-wide config, re-read whenever config.toml changes on disk.
+
+    This used to be @lru_cache(maxsize=1), which is wrong for the way the MCP
+    server actually runs: it is a long-lived child of a Claude session, so it
+    snapshots the config at startup and then serves that snapshot for the rest
+    of the session. Adding a read root therefore had no effect on any session
+    already running - the path stayed refused for hours, and looked like a
+    permanent limitation of the tool rather than a stale process.
+
+    Stat-per-call is roughly a microsecond against calls that take seconds.
+    """
+    global _cache
+    path = config_path()
+    stamp = _stamp(path)
+    if _cache is not None and _cache[0] == stamp:
+        return _cache[1]
+    try:
+        cfg = load_config(path)
+    except ConfigError:
+        # A half-saved or malformed file must not take down every running
+        # server. Keep serving the last good config; the next write is another
+        # mtime change, so a fix is picked up without a restart.
+        if _cache is not None:
+            _cache = (stamp, _cache[1])
+            return _cache[1]
+        raise
+    _cache = (stamp, cfg)
+    return cfg

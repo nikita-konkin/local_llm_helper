@@ -30,7 +30,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
-from .config import PROJECT_ROOT, Config, get_config, load_config
+from .config import invalidate as config_invalidate, PROJECT_ROOT, Config, get_config, load_config
 from .store import Store
 
 app = FastAPI(title="local_llm_helper", docs_url=None, redoc_url=None)
@@ -364,7 +364,7 @@ def api_set_settings(patch: SettingsPatch) -> dict:
         path.write_text(backup.read_text(encoding="utf-8"), encoding="utf-8")
         raise HTTPException(400, f"change rejected, config restored: {exc}") from exc
 
-    get_config.cache_clear()
+    config_invalidate()
     return {
         "changed": applied,
         "note": "A running worker keeps its old settings until restarted.",

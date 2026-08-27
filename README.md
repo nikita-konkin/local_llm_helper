@@ -117,6 +117,44 @@ back would undo the saving the job just made.
 
 `local_stats()` reports the ledger.
 
+### What it can read
+
+Two things decide whether a path is readable: it must sit inside
+`paths.read_roots` and outside `deny_globs`, and its format must be one the
+helper can turn into text.
+
+| Format | Handling |
+|---|---|
+| `.txt` `.md` `.py` `.log` `.json` `.csv` and other plain text | read directly, with a UTF-8 / cp1251 / cp1252 / latin-1 fallback chain |
+| `.pdf` | text layer extracted per page, prefixed `[page N]` so citations stay findable |
+| `.docx` | paragraphs and tables |
+| `.xlsx` `.xlsm` | every sheet as TSV, prefixed `[sheet name]` |
+| `.pptx` | slide text, prefixed `[slide N]` — needs `pip install python-pptx` |
+| `.html` `.htm` | markup, scripts and styles stripped |
+| `.gguf` `.png` `.zip` `.exe` … | refused as binary |
+
+PDF extraction uses **pdfplumber** where it is installed and falls back to
+**pypdf**. pdfplumber positions glyphs rather than reading the content stream in
+order, which matters more than it sounds: on a letter-spaced LaTeX title page
+pypdf produces `PONTIFICI A UNIVERSI DAD`, which no model can match against
+anything. Measured on a 992-page book the two cost 12 s and 66 s, and next to the
+minutes of inference that follow, accuracy is the better buy.
+
+A **scanned** PDF has no text layer. It is reported as needing OCR rather than
+returned as an empty document, which would read as "the file is blank".
+
+`.doc`, `.rtf` and `.epub` are not supported — convert them first.
+
+### Changing the read roots
+
+`config.toml` is re-read whenever it changes on disk, so adding a root takes
+effect in sessions that are already running. This was not always true: `get_config()
+` was cached for the life of the process, and since the MCP server is a long-lived
+child of a Claude session, a newly added root stayed refused for hours and looked
+like a permanent limitation of the tool.
+
+**Code changes still need a restart.** Only the configuration reloads.
+
 ### What the ledger does and does not count
 
 `llmh stats` excludes measurement traffic (`llmh bench`, `llmh ab`) by default, and
@@ -720,3 +758,7 @@ jobs/  results/  logs/  bench/  config.toml
 - Token counts use tiktoken `cl100k_base` as a proxy for what a frontier model
   would have paid. Close enough to steer decisions, not an exact bill.
 - Nothing runs from the queue unless `llmh worker` is running.
+- Scanned PDFs need OCR first; there is no OCR step in the pipeline.
+- `.doc`, `.rtf` and `.epub` have no extractor. `.pptx` needs `python-pptx`.
+- Editing the package's code requires restarting the MCP server, the worker and
+  the dashboard. Only `config.toml` is picked up live.
