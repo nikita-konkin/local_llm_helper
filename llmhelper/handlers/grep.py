@@ -158,6 +158,12 @@ class GrepHandler:
             # over unranked rather than turning a triage miss into a confident
             # negative. A search tool that silently drops the right answer is worse
             # than one that returns too much.
+            # Suggesting a tier we are already on is noise. Only escalate upward.
+            escalate = (
+                ""
+                if tier.name == "deep"
+                else ' If this search must not miss, re-run with tier="deep".'
+            )
             shown = hits[:15]
             listing = "\n".join(
                 f"- {h.citation}: {h.line.strip()[:160]}" for h in shown
@@ -167,7 +173,7 @@ class GrepHandler:
                 f"{len(hits)} textual match(es) for {query!r}. Relevance triage on "
                 f"tier '{tier.name}' kept none of them - which is at least as likely "
                 f"to be a triage miss as a real absence, so the raw matches follow "
-                f"unranked. If this search must not miss, re-run with tier=\"deep\".\n\n"
+                f"unranked.{escalate}\n\n"
                 f"{listing}{more}\n\nPatterns tried: {', '.join(patterns)}"
             )
             detail = "\n\n".join(

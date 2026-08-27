@@ -16,6 +16,7 @@ from .config import Config, Tier, get_config
 from .guard import resolve_write, slug
 from .handlers import get_handler
 from .handlers.base import Ctx, HandlerResult
+from .lock import gpu_lease
 from .store import Store
 
 # What each job kind wants when the caller does not say.
@@ -126,8 +127,18 @@ def execute(
     llm = llm or runtime.llm
 
     tier = TierResolver(cfg, runtime).resolve(kind, tier_name or spec.get("tier"))
-    ctx = Ctx(cfg=cfg, llm=llm, runtime=runtime, on_progress=on_progress)
-    result = handler.run(spec, ctx, tier)
+    # source is already the lane: the worker is the only queued caller.
+    lane = "queue" if source == "worker" else "express"
+    ctx = Ctx(
+        cfg=cfg, llm=llm, runtime=runtime, on_progress=on_progress, lane=lane
+    )
+
+    # One GPU, one tier at a time. Without this the express lane and the worker
+    # each make their own tier resident and the card is overcommitted; the queued
+    # side waits as long as it takes, the synchronous side gives up and says so.
+    wait_s = float("inf") if lane == "queue" else cfg.budgets.gpu_wait_s
+    with gpu_lease(cfg, f"{lane}:{kind}", wait_s=wait_s, on_wait=ctx.progress):
+        result = handler.run(spec, ctx, tier)
 
     if write_detail and result.detail:
         label = spec.get("question") or spec.get("query") or spec.get("label") or kind

@@ -33,7 +33,6 @@ class AskHandler:
             tier,
             system=spec.get("system") or SYSTEM,
             max_tokens=max_out,
-            timeout=ctx.cfg.budgets.express_timeout_s,
         )
 
         text = completion.text

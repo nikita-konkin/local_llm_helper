@@ -259,6 +259,7 @@ def api_settings() -> dict:
             "map_concurrency": c.budgets.map_concurrency,
             "express_max_out_tokens": c.budgets.express_max_out_tokens,
             "express_timeout_s": c.budgets.express_timeout_s,
+            "queue_timeout_s": c.budgets.queue_timeout_s,
             "max_map_chunks": c.budgets.max_map_chunks,
             "result_retention_days": c.budgets.result_retention_days,
             "poll_interval_s": c.worker.poll_interval_s,
@@ -289,6 +290,7 @@ class SettingsPatch(BaseModel):
     map_concurrency: int | None = None
     express_max_out_tokens: int | None = None
     express_timeout_s: float | None = None
+    queue_timeout_s: float | None = None
     max_map_chunks: int | None = None
     result_retention_days: int | None = None
     poll_interval_s: float | None = None
@@ -303,6 +305,7 @@ _TABLE = {
     "map_concurrency": "budgets",
     "express_max_out_tokens": "budgets",
     "express_timeout_s": "budgets",
+    "queue_timeout_s": "budgets",
     "max_map_chunks": "budgets",
     "result_retention_days": "budgets",
     "poll_interval_s": "worker",

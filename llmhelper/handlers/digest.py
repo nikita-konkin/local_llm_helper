@@ -207,7 +207,6 @@ class DigestHandler:
         )
         completion = ctx.generate(
             prompt, tier, system=SINGLE_SYSTEM, max_tokens=max_out,
-            timeout=ctx.cfg.budgets.express_timeout_s,
         )
         return completion.text, ""
 
@@ -359,7 +358,6 @@ class DigestHandler:
         )
         completion = ctx.generate(
             prompt, tier, system=REDUCE_SYSTEM, max_tokens=max_out,
-            timeout=ctx.cfg.budgets.express_timeout_s,
         )
         return completion.text, evidence
 

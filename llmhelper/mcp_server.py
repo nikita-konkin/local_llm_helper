@@ -25,6 +25,7 @@ from pydantic import Field
 
 from .chunk import count_tokens
 from .config import get_config
+from .lock import GpuBusy
 from .guard import GuardError, expand
 from .runner import execute
 from .store import Priority, Store
@@ -192,6 +193,10 @@ async def _run(kind: str, spec: dict[str, Any], tier: Optional[str]) -> str:
 
     try:
         return await anyio.to_thread.run_sync(work)
+    except GpuBusy as exc:
+        # Not a failure of the request - the card is simply busy. Say so plainly
+        # so the caller queues the work instead of retrying into the same wall.
+        return f"GPU busy: {exc}"
     except (GuardError, FileNotFoundError, ValueError) as exc:
         return f"Refused: {exc}"
     except Exception as exc:  # noqa: BLE001 - surface the failure, do not crash the server

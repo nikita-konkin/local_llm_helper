@@ -9,6 +9,8 @@ lane returns `summary`. The evidence was in hand and the summary contradicted it
 
 from __future__ import annotations
 
+import dataclasses
+
 from llmhelper.handlers.grep import GrepHandler, _is_yes
 
 
@@ -98,3 +100,31 @@ def test_the_summary_does_not_claim_absence(sandbox):
     low = res.summary.lower()
     assert "triage" in low, "the caller must be told why nothing was ranked"
     assert "as likely" in low or "miss" in low
+
+
+def test_the_deep_tier_is_not_told_to_use_the_deep_tier(sandbox):
+    """Escalation advice on the top tier is noise: there is nowhere to escalate."""
+    root = sandbox.paths.read_roots[0]
+    (root / "project" / "conf.py").write_text(
+        "read_roots = ['/tmp']\n", encoding="utf-8"
+    )
+    res = GrepHandler().run(
+        {"paths": [str(root)], "query": "read roots"},
+        _RejectingCtx(sandbox),
+        dataclasses.replace(sandbox.tiers["fast"], name="deep"),
+    )
+    assert 'tier="deep"' not in res.summary
+    assert "triage" in res.summary.lower(), "still explains why nothing was ranked"
+
+
+def test_a_lower_tier_is_still_told_to_escalate(sandbox):
+    root = sandbox.paths.read_roots[0]
+    (root / "project" / "conf.py").write_text(
+        "read_roots = ['/tmp']\n", encoding="utf-8"
+    )
+    res = GrepHandler().run(
+        {"paths": [str(root)], "query": "read roots"},
+        _RejectingCtx(sandbox),
+        sandbox.tiers["fast"],
+    )
+    assert 'tier="deep"' in res.summary

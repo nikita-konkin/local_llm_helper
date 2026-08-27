@@ -114,6 +114,14 @@ class PathsCfg:
 class BudgetsCfg:
     express_max_out_tokens: int
     express_timeout_s: float
+    # The queue exists for work too long to wait on, so it must not inherit the
+    # synchronous cap. A deep-tier digest ran past express_timeout_s and was
+    # killed three times over, once per retry, on a lane whose whole purpose is
+    # that nobody is waiting.
+    queue_timeout_s: float
+    # How long a synchronous call waits for the GPU when the worker holds it.
+    # One card cannot hold two tiers, so the lanes take turns.
+    gpu_wait_s: float
     map_chunk_tokens: int
     map_overlap_tokens: int
     map_summary_tokens: int
@@ -206,6 +214,8 @@ def load_config(path: str | Path | None = None) -> Config:
     budgets = BudgetsCfg(
         express_max_out_tokens=int(bud.get("express_max_out_tokens", 1200)),
         express_timeout_s=float(bud.get("express_timeout_s", 420)),
+        queue_timeout_s=float(bud.get("queue_timeout_s", 3600)),
+        gpu_wait_s=float(bud.get("gpu_wait_s", 180)),
         map_chunk_tokens=int(bud.get("map_chunk_tokens", 6000)),
         map_overlap_tokens=int(bud.get("map_overlap_tokens", 200)),
         map_summary_tokens=int(bud.get("map_summary_tokens", 400)),

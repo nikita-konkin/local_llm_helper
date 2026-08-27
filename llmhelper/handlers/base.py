@@ -93,8 +93,13 @@ class Ctx:
         llm: LocalLLM | None = None,
         runtime: Any = None,
         on_progress: Callable[[str], None] | None = None,
+        lane: str = "express",
     ):
         self.cfg = cfg or get_config()
+        # "express" (someone is waiting) or "queue" (nobody is). Decides how long
+        # a single generation may take; handlers must not hardcode this, because
+        # the worker runs the very same handler objects.
+        self.lane = lane
         self.llm = llm or LocalLLM(self.cfg)
         self._runtime = runtime
         self.on_progress = on_progress or (lambda _msg: None)
@@ -111,6 +116,11 @@ class Ctx:
 
             self._runtime = Runtime(self.cfg, self.llm)
         return self._runtime
+
+    @property
+    def timeout_s(self) -> float:
+        b = self.cfg.budgets
+        return b.queue_timeout_s if self.lane == "queue" else b.express_timeout_s
 
     @property
     def elapsed(self) -> float:
@@ -143,6 +153,7 @@ class Ctx:
         must happen once, before the pool starts, or the threads race to load the
         same model.
         """
+        kw.setdefault("timeout", self.timeout_s)
         if ensure_loaded:
             self.runtime.ensure_loaded(tier)
         completion = self.llm.ask(prompt, tier, system=system, max_tokens=max_tokens, **kw)
