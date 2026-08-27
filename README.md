@@ -356,6 +356,37 @@ exactly that string as a variant. Loads use the bare model key; `quant` in
 `config.toml` is only used to match the catalogue, so a 20 GB Q4 is never confused
 with a 66 GB BF16.
 
+### The queue inherited the timeout for work someone is waiting on
+
+`digest.py` and `ask.py` passed `budgets.express_timeout_s` straight to the
+client, and the worker runs those same handler objects. So a deep-tier digest
+submitted *because* it was too slow to wait for was killed at 420 s — three
+times, once per retry. `[server].request_timeout_s = 900` never reached it.
+
+The lane is now a property of the context. `Ctx` carries it, `Ctx.timeout_s`
+resolves it, `generate()` applies it, and no handler names a timeout at all.
+`execute()` derives the lane from `source`, which already distinguished the
+caller. Queued work gets `budgets.queue_timeout_s`, default 3600.
+
+### Two lanes, one card
+
+The express lane and the worker each called `ensure_loaded` independently, so
+both tiers went resident together: `qwen3.5-9b` (6.55 GB) beside `qwen3.8-27b`
+(14.25 GB), **20.8 GB on a 16 GB card**. LM Studio's JIT loading is what makes
+this possible — a request for a model that is not loaded pulls it in without
+going through `ensure_loaded` at all, so the one-model-at-a-time rule never sees
+it. The consequences were a deep load aborting with *"Engine protocol startup was
+aborted"*, and a synchronous grep taking 875 s instead of 40 because it was
+competing for a card that had already spilled into system RAM.
+
+`lock.gpu_lease` now serialises them. The worker waits as long as it takes; a
+synchronous call waits `budgets.gpu_wait_s` (default 180) and then reports that
+the GPU is busy and names the holder, which is more useful than crawling.
+Measured after the fix: a queued deep digest finished in 87 s on the first
+attempt, an express call made during it waited and reported
+`waiting for the GPU, held by queue:digest (pid 50872)`, and one model stayed
+resident throughout.
+
 ### A search that lost the answer three ways at once
 
 A search for where read roots are enforced returned 40 matches on `fast` and

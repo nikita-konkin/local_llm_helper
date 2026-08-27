@@ -1,0 +1,160 @@
+# local_llm_helper configuration
+# Paths may be absolute or relative to the project root (this file's directory).
+
+[server]
+base_url          = "http://127.0.0.1:1234/v1"
+# Where LM Studio listens. 0.0.0.0 makes the model reachable from the LAN, which
+# a laptop running its own copy of this package needs. Set deliberately: an
+# explicit restart does not remember the previous binding, and dropping back to
+# 127.0.0.1 silently disconnects every other machine.
+bind              = "0.0.0.0"
+port              = 1234
+lms_exe           = "C:/Users/VV/.lmstudio/bin/lms.exe"
+# A 59 GB model genuinely takes longer than a few minutes to page in from disk;
+# 240 s was too short and looked like a load failure.
+startup_timeout_s = 1200
+request_timeout_s = 900
+
+[paths]
+outbox      = "results"
+jobs_db     = "jobs/llmhelper.db"
+logs        = "logs"
+bench       = "bench"
+# Roots the local model is allowed to READ from. Everything else is refused by guard.py.
+read_roots  = [
+  "N:/",
+  "C:/Users/VV/Downloads",
+  "C:/Users/VV/.lmstudio/server-logs",
+  # Agent scratchpads. A session writes intermediate files here and then
+  # wants them digested; without this the guard refuses its own working
+  # directory, which is how a real digest job failed three times.
+  "C:/Users/VV/AppData/Local/Temp/claude",
+]
+# Never readable, even inside an allowed root. Matched against the full resolved path.
+deny_globs = [
+  "**/.git/**",
+  "**/.venv/**",
+  "**/__pycache__/**",
+  "**/node_modules/**",
+  "**/.ssh/**",
+  "**/.env",
+  "**/.env.*",
+  "**/*.key",
+  "**/*.pem",
+  "**/.credentials.json",
+  "**/.claude/**",
+]
+
+[budgets]
+# Express lane: synchronous MCP calls. Kept small so a call never stalls a session.
+express_max_out_tokens = 1200
+# A queued job has nobody waiting on it, so it must not inherit the
+# synchronous cap. Measured: a deep-tier digest was killed at 420 s,
+# once per retry, three times.
+queue_timeout_s        = 3600
+express_timeout_s      = 420
+# Map-reduce chunking for digest over large inputs.
+map_chunk_tokens       = 24000
+map_overlap_tokens     = 200
+map_summary_tokens     = 400      # per-chunk output cap
+max_map_chunks         = 400      # refuse absurd inputs rather than run for hours
+# LM Studio serves several slots against one resident model, so extraction calls
+# during a map phase can overlap. Raising this past the server's slot count just
+# queues requests; it does not go faster.
+map_concurrency        = 4
+# Retention: prune results/ entries older than this.
+result_retention_days  = 30
+
+[worker]
+poll_interval_s = 2.0
+max_attempts    = 3
+# Tier the worker falls back to if the requested tier can't be loaded.
+fallback_tier   = "fast"
+# 0 = never release the resident model. Set because a laptop runs its own copy
+# against this GPU and cannot load models itself: when this unloads, that
+# machine's next request JIT-loads at LM Studio's default 8192 instead of the
+# tier's 131072, and nothing says so.
+idle_unload_after_s = 0
+
+# ---------------------------------------------------------------- tiers
+# The worker keeps ONE model resident at a time and unloads before switching.
+# min_free_ram_gb is checked before load; the tier is refused if headroom is short.
+
+[tiers.fast]
+model           = "qwen/qwen3.5-9b"
+quant           = "Q4_K_M"
+context         = 131072
+min_free_ram_gb = 10
+# qwen3.5-9b is a reasoning model and bills thinking against max_tokens; an
+# extraction call with a small budget would spend it all thinking. Off by default.
+reasoning_effort = "none"
+temperature     = 0.2
+gpu_ratio       = -1          # auto-fit; this one fits the card easily anyway
+
+[tiers.work]
+model           = "qwen/qwen3.6-35b-a3b"
+quant           = "Q4_K_M"      # NOT the 71 GB BF16 copy already on disk
+context         = 32768
+min_free_ram_gb = 28
+reasoning_effort = "none"
+temperature     = 0.2
+gpu_ratio       = -1
+
+# [tiers.heavy] — REMOVED 2026-08-24 after measurement, not assumption.
+#
+# openai/gpt-oss-120b MXFP4 (59 GB) does load on this machine, but the numbers
+# make it useless: 217 s to load, 4.2 tok/s (the `fast` tier does 100.5), and it
+# leaves 0.6 GB of free RAM — close enough to the edge to destabilise the desktop.
+# A tier that is 24x slower and risks the machine is not a tier worth routing to.
+#
+# The 59 GB file is still on disk. To reclaim it:
+#   rm -rf "C:/Users/VV/.lmstudio/models/openai/gpt-oss-120b"
+# To bring the tier back, restore this block with context 8192 / ram_headroom 1.02.
+
+# --- A/B candidates for the `fast` slot (added 2026-08-24) ---
+# Both fit the 16 GB card, which is the only band that matters on this machine.
+# Both are reasoning models, so both need reasoning_effort disabled for extraction.
+
+[tiers.gemma]
+model            = "gemma-4-12b-it-qat"
+quant            = "Q4_0"          # Google's quantisation-aware build, not post-hoc
+context          = 32768
+min_free_ram_gb  = 10
+reasoning_effort = "none"
+temperature      = 0.2
+gpu_ratio        = -1
+
+# [tiers.cand_ornith] removed 2026-08-24 — factually wrong on the A/B (missed a cudaMalloc OOM entirely).
+
+[tiers.deep]
+# Second attempt. The first used Q4_K_M at 16.52 GB, which will not fit a 16.3 GB
+# card at all — 1.38 tok/s. IQ4_XS is the largest quantisation that leaves real
+# KV-cache headroom, so this is the fair test of the architecture.
+model            = "qwen3.8-27b"
+quant            = "IQ4_XS"
+# The accuracy tier. Slowest by far (~19 tok/s, a 119 KB log digest takes ~8 min)
+# but the most thorough model tested: on the reference question it found 12 cited
+# lines to `fast`'s 3, every citation verified exact, and it was the ONLY model to
+# convert 68348529152 bytes to GiB correctly. Use it for queued work where being
+# right matters more than being quick.
+#
+# Measured: ctx 8192 + gpu_ratio 0.9 gives 24.4 tok/s; ctx 16384 halves that to
+# 12.3, and forcing all layers onto the GPU collapses it to 0.5.
+# parallel=1 is what makes this tier usable. At LM Studio's default of 4 slots the
+# context is split four ways (2048 each) *and* the KV cache is allocated four
+# times over, so chunks had to be tiny and most of them overflowed anyway.
+# Measured at parallel=1: 19.7 tok/s at ctx 8192, 19.8 at 16384 — flat, because the
+# KV cache is no longer allocated four times over. At ctx 32768 it collapses to
+# 1.8 tok/s as the cache pushes layers back onto the CPU. 16384 is the sweet spot.
+parallel         = 1
+context          = 16384
+min_free_ram_gb  = 16
+reasoning_effort = "none"
+temperature      = 0.2
+gpu_ratio        = 0.9
+
+[tiers.embed]
+model           = "text-embedding-nomic-embed-text-v1.5"
+context         = 2048
+min_free_ram_gb = 2
+kind            = "embedding"
