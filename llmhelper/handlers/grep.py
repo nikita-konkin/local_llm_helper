@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from ..chunk import count_tokens
-from ..config import Tier
+from ..config import Config, Tier
 from ..guard import expand, read_text
 from .base import DATA_RULE, Ctx, HandlerResult, fence
 
@@ -61,12 +61,25 @@ Reply with exactly one of:
 Be strict. A passing mention of a word is not an answer."""
 
 
+def _is_yes(verdict: str) -> bool:
+    """Was the triage verdict affirmative?
+
+    The model is asked for "YES: ..." or "NO", and returns "**YES**: ...",
+    "`YES`" or "Yes -" often enough that a bare startswith() check silently
+    discards good hits. Strip decoration before deciding.
+    """
+    return verdict.strip().lstrip("*_`#>- ").upper().startswith("YES")
+
+
 @dataclass
 class Hit:
     path: Path
     line_no: int
     line: str
     context: str
+    # How many distinct query patterns matched this line; used to rank within a
+    # file before the hit budget is shared out.
+    score: int = 1
 
     @property
     def citation(self) -> str:
@@ -97,7 +110,9 @@ class GrepHandler:
         patterns = explicit or self._derive_patterns(ctx, tier, query)
         ctx.progress(f"scanning {len(files)} file(s) for {len(patterns)} pattern(s)")
 
-        hits, scanned_tokens = self._scan(files, patterns, context_lines, max_hits)
+        hits, scanned_tokens, unreadable, total_hits = self._scan(
+            files, patterns, context_lines, max_hits, ctx.cfg
+        )
         if not hits:
             return HandlerResult(
                 summary=(
@@ -105,7 +120,12 @@ class GrepHandler:
                     f"Patterns tried: {', '.join(patterns)}"
                 ),
                 detail="",
-                meta={"files": len(files), "patterns": patterns, "hits": 0},
+                meta={
+                    "files": len(files),
+                    "patterns": patterns,
+                    "hits": 0,
+                    "unreadable": unreadable[:20],
+                },
                 input_tokens=scanned_tokens,
                 output_tokens=40,
                 local_prompt_tokens=ctx.local_prompt_tokens,
@@ -127,15 +147,32 @@ class GrepHandler:
                 max_tokens=120,
                 reasoning_effort="none",  # a YES/NO verdict has no room for thinking
             ).text.strip()
-            if verdict.upper().startswith("YES"):
-                kept.append((hit, verdict.split(":", 1)[-1].strip()))
+            if _is_yes(verdict):
+                kept.append((hit, verdict.split(":", 1)[-1].strip(" *`:")))
 
         if not kept:
-            summary = (
-                f"{len(hits)} textual match(es) for {query!r}, but none of them actually "
-                f"answer it. Patterns tried: {', '.join(patterns)}"
+            # Do NOT report this as "nothing answers the question". The triage pass
+            # is a small model judging excerpts one at a time, and it over-rejects:
+            # observed on tier fast, 40 real matches were all refused while the
+            # answer sat in one of them. The hits are already in hand, so hand them
+            # over unranked rather than turning a triage miss into a confident
+            # negative. A search tool that silently drops the right answer is worse
+            # than one that returns too much.
+            shown = hits[:15]
+            listing = "\n".join(
+                f"- {h.citation}: {h.line.strip()[:160]}" for h in shown
             )
-            detail = "\n".join(f"- {h.citation}: {h.line.strip()[:160]}" for h in hits)
+            more = f"\n(+{len(hits) - len(shown)} more)" if len(hits) > len(shown) else ""
+            summary = (
+                f"{len(hits)} textual match(es) for {query!r}. Relevance triage on "
+                f"tier '{tier.name}' kept none of them - which is at least as likely "
+                f"to be a triage miss as a real absence, so the raw matches follow "
+                f"unranked. If this search must not miss, re-run with tier=\"deep\".\n\n"
+                f"{listing}{more}\n\nPatterns tried: {', '.join(patterns)}"
+            )
+            detail = "\n\n".join(
+                f"### {h.citation}\n```\n{h.context}\n```" for h in shown
+            )
         else:
             lines = [f"{len(kept)} relevant match(es) for: {query}\n"]
             for hit, why in kept:
@@ -153,8 +190,10 @@ class GrepHandler:
                 "files": len(files),
                 "patterns": patterns,
                 "raw_hits": len(hits),
+                "total_hits": total_hits,
                 "kept": len(kept),
                 "skipped": skipped[:20],
+                "unreadable": unreadable[:20],
             },
             input_tokens=scanned_tokens,
             output_tokens=count_tokens(summary),
@@ -191,43 +230,89 @@ class GrepHandler:
         return patterns[:12]
 
     def _scan(
-        self, files: list[Path], patterns: list[str], context_lines: int, max_hits: int
-    ) -> tuple[list[Hit], int]:
-        compiled = []
-        for p in patterns:
-            try:
-                compiled.append(re.compile(p, re.IGNORECASE))
-            except re.error:
-                compiled.append(re.compile(re.escape(p), re.IGNORECASE))
+        self,
+        files: list[Path],
+        patterns: list[str],
+        context_lines: int,
+        max_hits: int,
+        cfg: Config | None = None,
+    ) -> tuple[list[Hit], int, list[str], int]:
+        """Collect matches, giving every file a share of the budget.
 
-        hits: list[Hit] = []
+        This used to stop walking the moment max_hits was reached, which meant the
+        cap silently truncated the corpus in directory order: a broad pattern that
+        matched often in cli.py exhausted all 40 slots before the walk ever opened
+        guard.py, and the answer was reported as absent from files that were never
+        read. Alphabetical position is not relevance.
+
+        Now every file is scanned, and the budget is filled round-robin, so a file
+        with one good match is represented before any file contributes a second.
+        """
+        compiled = []
+        for pat in patterns:
+            try:
+                compiled.append(re.compile(pat, re.IGNORECASE))
+            except re.error:
+                compiled.append(re.compile(re.escape(pat), re.IGNORECASE))
+
+        # Bounds the work on a pathological file without biasing between files.
+        per_file_cap = max(max_hits, 200)
+
+        found: list[list[Hit]] = []
+        unreadable: list[str] = []
         scanned_tokens = 0
         for path in files:
             try:
-                text = read_text(path)
-            except Exception:  # noqa: BLE001 - a single unreadable file is not fatal
+                text = read_text(path, cfg=cfg)
+            except Exception as exc:  # noqa: BLE001 - one bad file is not fatal
+                # Recorded, not swallowed. A file that could not be read is a file
+                # the answer might have been in, and a search that quietly narrows
+                # its own corpus is the same failure as a triage that quietly drops
+                # the right hit.
+                unreadable.append(f"{path}: {type(exc).__name__}: {exc}")
                 continue
             scanned_tokens += count_tokens(text)
             lines = text.splitlines()
             claimed: set[int] = set()
+            in_file: list[Hit] = []
             for i, line in enumerate(lines):
-                if len(hits) >= max_hits:
+                if len(in_file) >= per_file_cap:
                     break
-                if i in claimed or not any(rx.search(line) for rx in compiled):
+                if i in claimed:
+                    continue
+                score = sum(1 for rx in compiled if rx.search(line))
+                if not score:
                     continue
                 lo = max(0, i - context_lines)
                 hi = min(len(lines), i + context_lines + 1)
                 claimed.update(range(lo, hi))  # don't re-report the same neighbourhood
-                hits.append(
+                in_file.append(
                     Hit(
                         path=path,
                         line_no=i + 1,
                         line=line,
+                        score=score,
                         context="\n".join(
                             f"{n + 1:>6}: {lines[n]}" for n in range(lo, hi)
                         ),
                     )
                 )
-            if len(hits) >= max_hits:
-                break
-        return hits, scanned_tokens
+            if in_file:
+                # A line matching three of the query's patterns is a better bet
+                # than one matching a single common word. Offer each file's
+                # strongest lines first, so the round-robin below spends the
+                # budget on candidates rather than on whatever came first.
+                in_file.sort(key=lambda h: (-h.score, h.line_no))
+                found.append(in_file)
+
+        total = sum(len(f) for f in found)
+        hits: list[Hit] = []
+        depth = 0
+        while len(hits) < max_hits and any(len(f) > depth for f in found):
+            for f in found:
+                if depth < len(f) and len(hits) < max_hits:
+                    hits.append(f[depth])
+            depth += 1
+
+        hits.sort(key=lambda h: (str(h.path), h.line_no))
+        return hits, scanned_tokens, unreadable, total
