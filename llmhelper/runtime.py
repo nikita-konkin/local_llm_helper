@@ -14,6 +14,8 @@ the only way to get the context we need.
 from __future__ import annotations
 
 import shutil
+import threading
+from typing import Any
 import subprocess
 import time
 from dataclasses import dataclass
@@ -185,18 +187,83 @@ def total_ram_gb() -> float:
     return psutil.virtual_memory().total / GB
 
 
-def gpu_memory_mb() -> tuple[int, int] | None:
-    """(used, total) VRAM in MB from nvidia-smi, or None if unavailable."""
+# CPU use is a rate, so it needs two samples. psutil.cpu_percent(interval=None)
+# keeps that previous sample in process-global state shared by every caller,
+# which made it read a flat 0.0 intermittently. Own the arithmetic instead: our
+# own baseline cannot be reset by anyone else, and a genuinely idle machine then
+# reads 0.3 rather than exactly zero, which is the difference between a number
+# and a bug that looks like one.
+_cpu_prev: dict[str, Any] = {"busy": None, "total": None}
+_cpu_lock = threading.Lock()
+
+
+def _cpu_sample() -> tuple[float, float]:
+    t = psutil.cpu_times()
+    total = float(sum(t))
+    return total - float(t.idle), total
+
+
+def cpu_load() -> dict:
+    """System-wide CPU use since the previous call, and the cores it spans."""
+    with _cpu_lock:
+        busy, total = _cpu_sample()
+        prev_busy, prev_total = _cpu_prev["busy"], _cpu_prev["total"]
+        _cpu_prev["busy"], _cpu_prev["total"] = busy, total
+
+        pct = None
+        if prev_busy is not None:
+            d_total = total - prev_total
+            if d_total > 0:
+                pct = round(100.0 * (busy - prev_busy) / d_total, 1)
+
+    return {
+        "cpu_pct": pct,  # None until there are two samples to compare
+        "cpu_cores": psutil.cpu_count(logical=True),
+    }
+
+
+# Establish the baseline at import so the first request has something to subtract.
+cpu_load()
+
+
+def gpu_stats() -> dict | None:
+    """Utilisation, temperature, power and VRAM in one nvidia-smi call.
+
+    One call rather than one per field: nvidia-smi costs tens of milliseconds of
+    process startup, and the dashboard polls this on every refresh.
+    """
     smi = shutil.which("nvidia-smi") or r"C:\Windows\System32\nvidia-smi.exe"
+    fields = "memory.used,memory.total,utilization.gpu,temperature.gpu,power.draw"
     try:
         out = subprocess.run(
-            [smi, "--query-gpu=memory.used,memory.total", "--format=csv,noheader,nounits"],
+            [smi, f"--query-gpu={fields}", "--format=csv,noheader,nounits"],
             capture_output=True, text=True, timeout=20, check=True,
         ).stdout.strip().splitlines()[0]
-        used, total = (int(x.strip()) for x in out.split(","))
-        return used, total
+        used, total, util, temp, power = (x.strip() for x in out.split(","))
     except (OSError, subprocess.SubprocessError, ValueError, IndexError):
         return None
+
+    def num(raw):
+        try:
+            return int(float(raw))
+        except (TypeError, ValueError):
+            return None  # nvidia-smi prints "[N/A]" for unsupported fields
+
+    return {
+        "vram_used_mb": num(used),
+        "vram_total_mb": num(total),
+        "gpu_pct": num(util),
+        "gpu_temp_c": num(temp),
+        "gpu_power_w": num(power),
+    }
+
+
+def gpu_memory_mb() -> tuple[int, int] | None:
+    """(used, total) VRAM in MB, or None if nvidia-smi is unavailable."""
+    st = gpu_stats()
+    if not st or st["vram_used_mb"] is None or st["vram_total_mb"] is None:
+        return None
+    return st["vram_used_mb"], st["vram_total_mb"]
 
 
 class Runtime:

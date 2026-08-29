@@ -57,6 +57,12 @@
            padding:10px 14px; border-radius:8px; font-size:12.5px; max-width:420px;
            box-shadow:0 6px 24px rgba(0,0,0,.14) }
   .flash.err { border-left-color:var(--bad) }
+  .meter { display:inline-block; width:58px; height:6px; border-radius:99px;
+           background:var(--line); overflow:hidden; vertical-align:middle;
+           margin-right:8px }
+  .meter i { display:block; height:100%; width:0; border-radius:99px;
+             background:var(--ok); transition:width .4s ease, background .4s ease }
+  .meter i.warm { background:var(--warn) } .meter i.hot { background:var(--bad) }
   .muted-row td { color:var(--dim) }
   .err-line { color:var(--bad); font-size:11px; margin-top:3px; line-height:1.35;
               word-break:break-word }
@@ -75,8 +81,13 @@
     <div class="row"><span class="k">LM Studio server</span><span class="v" id="s-server">—</span></div>
     <div class="row"><span class="k">Worker</span><span class="v" id="s-worker">—</span></div>
     <div class="row"><span class="k">Model resident</span><span class="v" id="s-model">—</span></div>
+    <div class="row"><span class="k">CPU</span><span class="v">
+      <span class="meter"><i id="s-cpu-bar"></i></span><span id="s-cpu">—</span></span></div>
+    <div class="row"><span class="k">GPU</span><span class="v">
+      <span class="meter"><i id="s-gpu-bar"></i></span><span id="s-gpu">—</span></span></div>
     <div class="row"><span class="k">RAM free</span><span class="v" id="s-ram">—</span></div>
-    <div class="row"><span class="k">VRAM</span><span class="v" id="s-vram">—</span></div>
+    <div class="row"><span class="k">VRAM</span><span class="v">
+      <span class="meter"><i id="s-vram-bar"></i></span><span id="s-vram">—</span></span></div>
     <div class="btns">
       <button onclick="post('/api/server/start')">Start server</button>
       <button onclick="confirmPost('/api/server/stop','Stop the model server? Any resident model is unloaded.')">Stop server</button>
@@ -184,6 +195,16 @@ const ago = iso => {
   if (s < 172800) return Math.round(s / 3600) + 'h ago';
   return Math.round(s / 86400) + 'd ago';
 };
+// Fills a meter and colours it by pressure. VRAM near full is the interesting
+// case here: this card cannot hold two tiers, so a bar in the red is the visible
+// form of the contention the GPU lease exists to prevent.
+function meter(id, pct) {
+  const el = $(id); if (!el) return;
+  if (pct == null) { el.style.width = '0'; el.className = ''; return; }
+  const v = Math.max(0, Math.min(100, pct));
+  el.style.width = v + '%';
+  el.className = v >= 90 ? 'hot' : v >= 70 ? 'warm' : '';
+}
 const esc = t => String(t ?? '').replace(/[&<>"']/g,
   c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let flashTimer;
@@ -234,7 +255,19 @@ async function refresh(fresh) {
     $('s-worker').innerHTML = s.worker_pid
       ? pill('running · pid ' + s.worker_pid,'ok') : pill('stopped','warn');
     $('s-model').textContent = s.loaded.length ? s.loaded.join(', ') : '—';
+    meter('s-cpu-bar', s.cpu_pct);
+    $('s-cpu').textContent = s.cpu_pct == null ? '—'
+      : `${s.cpu_pct}%` + (s.cpu_cores ? ` of ${s.cpu_cores} cores` : '');
+
+    meter('s-gpu-bar', s.gpu_pct);
+    $('s-gpu').textContent = s.gpu_pct == null ? 'no GPU'
+      : `${s.gpu_pct}%` + [s.gpu_temp_c != null ? `${s.gpu_temp_c}°C` : null,
+                           s.gpu_power_w != null ? `${s.gpu_power_w} W` : null]
+          .filter(Boolean).map(x => ` · ${x}`).join('');
+
     $('s-ram').textContent = `${s.ram_free_gb} / ${s.ram_total_gb} GB`;
+    const vpct = s.vram_total_mb ? 100 * s.vram_used_mb / s.vram_total_mb : null;
+    meter('s-vram-bar', vpct);
     $('s-vram').textContent = s.vram_total_mb
       ? `${fmt(s.vram_used_mb)} / ${fmt(s.vram_total_mb)} MB` : 'no GPU';
 

@@ -22,6 +22,7 @@ import os
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -43,7 +44,40 @@ _started = time.monotonic()
 # system's main workload. Runtime probes are cached; the database is not, since
 # reading SQLite costs nobody anything.
 _PROBE_TTL = 20.0
+# Load figures are sampled separately from the LM Studio probe. The probe is
+# cached for 20s to keep request volume off LM Studio; utilisation cached that
+# long would be stale enough to mislead - the point of showing it is to see the
+# card working. nvidia-smi costs a process spawn, so it still gets a short guard
+# against a hammering client.
+_LOAD_TTL = 3.0
+_load_cache: dict[str, Any] = {"at": 0.0, "value": None}
+# psutil.cpu_percent(interval=None) reports use since the *previous call in this
+# process*, which makes it shared mutable state. Two requests arriving together
+# both missed the cache, both sampled, and the second measured a zero-length
+# window and reported 0.0%. Serialise the sample so one call per TTL actually
+# means one.
+_load_lock = threading.Lock()
 _probe_cache: dict[str, Any] = {"at": 0.0, "value": None}
+
+
+def _load() -> dict:
+    """CPU and GPU utilisation, sampled near-live."""
+    now = time.monotonic()
+    if _load_cache["value"] is not None and now - _load_cache["at"] < _LOAD_TTL:
+        return _load_cache["value"]
+
+    from .runtime import cpu_load, gpu_stats
+
+    with _load_lock:
+        # Re-check inside the lock: whoever held it may have just sampled.
+        now = time.monotonic()
+        if _load_cache["value"] is not None and now - _load_cache["at"] < _LOAD_TTL:
+            return _load_cache["value"]
+        value = dict(cpu_load())
+        value.update(gpu_stats() or {})
+        _load_cache["at"] = now
+        _load_cache["value"] = value
+    return value
 
 
 def _probe(force: bool = False) -> dict:
@@ -140,6 +174,7 @@ def _spawn_detached(args: list[str]) -> int:
 def api_status(fresh: bool = False) -> dict:
     probe = _probe(force=fresh)
     snap = probe["snap"]
+    load = _load()
     pid = worker_pid()
 
     return {
@@ -149,8 +184,15 @@ def api_status(fresh: bool = False) -> dict:
         "worker_pid": pid,
         "ram_free_gb": snap["ram_free_gb"],
         "ram_total_gb": snap["ram_total_gb"],
-        "vram_used_mb": snap["vram_used_mb"],
-        "vram_total_mb": snap["vram_total_mb"],
+        # VRAM comes from the live sample rather than the cached probe: it is the
+        # number that moves when a model loads, so a 20s-old value is misleading.
+        "vram_used_mb": load.get("vram_used_mb", snap["vram_used_mb"]),
+        "vram_total_mb": load.get("vram_total_mb", snap["vram_total_mb"]),
+        "cpu_pct": load.get("cpu_pct"),
+        "cpu_cores": load.get("cpu_cores"),
+        "gpu_pct": load.get("gpu_pct"),
+        "gpu_temp_c": load.get("gpu_temp_c"),
+        "gpu_power_w": load.get("gpu_power_w"),
         "loaded": snap["loaded"],
         "tiers": probe["tiers"],
         "probe_age_s": round(time.monotonic() - _probe_cache["at"]),

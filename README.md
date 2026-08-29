@@ -690,7 +690,48 @@ A firewall rule alone is never enough: **something has to be listening**. Port
 8765 has no listener unless `autostart/start-mcp-http.cmd` is running, and an open
 port with nothing behind it times out exactly like a blocked one.
 
-### Autostart (installed)
+### Autostart at boot (Task Scheduler)
+
+The Startup-folder entries below run at *logon* - nothing starts until somebody
+signs in. To start at *boot* instead, run this in an **administrator** shell:
+
+```bash
+powershell -ExecutionPolicy Bypass -File autostart\install-tasks.ps1
+```
+
+It registers `LocalLLMHelper-Server`, `-Worker` and `-Dashboard` as scheduled
+tasks with an `AtStartup` trigger, staggered so the worker and dashboard do not
+race the model server, and deletes the Startup-folder entries so nothing runs
+twice.
+
+| Flag | Effect |
+|---|---|
+| *(none)* | boot trigger, server + worker + dashboard |
+| `-Trigger Logon` | logon trigger instead, same tasks |
+| `-IncludeMcpHttp` | also start MCP on **0.0.0.0:8765** - read the exposure warning below |
+| `-SkipDashboard` | leave the dashboard out |
+| `-Remove` | unregister everything it installed |
+
+Boot tasks use an **S4U principal**: the task runs as you, whether or not you are
+logged on, and Windows stores no password to do it. The trade-off is a restricted
+token - no network shares, no DPAPI-encrypted secrets. Everything here reads local
+files and talks to localhost, so that is fine in principle, but LM Studio's server
+is launched by `lms.exe` out of your user profile and has not been verified to
+come up before first sign-in. Reboot, then check:
+
+```bash
+.venv\Scripts\python.exe -m llmhelper.cli doctor
+```
+
+If the server is down, re-run the installer with `-Trigger Logon`.
+
+Verify the tasks without rebooting:
+
+```bash
+powershell -Command "Get-ScheduledTask -TaskName 'LocalLLMHelper-*' | Select TaskName,State"
+```
+
+### Autostart at logon (Startup folder)
 
 Two entries are installed in the Startup folder
 (`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup`), both launching hidden
