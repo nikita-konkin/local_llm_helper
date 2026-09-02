@@ -849,6 +849,52 @@ llmhelper/
 jobs/  results/  logs/  bench/  config.toml
 ```
 
+## Making sessions actually use it
+
+`CLAUDE.md` has asked every session to prefer `local_digest` since the project
+started, and sessions kept reaching for `Read` anyway. Guidance loses to a tool
+that is always present and free to call. `hooks/prefer-local-digest.py` is a
+`PreToolUse` hook on `Read` that makes the redirect happen instead of asking for
+it: a large read is refused once, with the exact `local_digest` call to make
+instead.
+
+Registered in `~/.claude/settings.json`, so it applies to every project on this
+machine, not just this one:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [{
+      "matcher": "Read",
+      "hooks": [{
+        "type": "command",
+        "command": "N:\local_llm_helper\.venv\Scripts\python.exe",
+        "args": ["N:\local_llm_helper\hooks\prefer-local-digest.py"],
+        "timeout": 10
+      }]
+    }]
+  }
+}
+```
+
+It is deliberately hard to get in the way of. A read passes untouched when it is
+bounded by `limit`, when the file is under ~20 KB, when the path is outside
+`read_roots` (suggesting a tool that would refuse the path is worse than
+suggesting nothing), when the format has no extractor, and when LM Studio is not
+listening - the helper being off must never stop anyone reading files. Anything
+unexpected - malformed input, missing config, a bug in the hook - exits 0 and the
+read proceeds.
+
+**The second `Read` of the same path in a session always goes through.** Claude
+needs exact bytes to edit, patch or match a string, and a hook with no escape
+hatch would make those impossible. Once is a redirect; twice is a decision.
+
+Tune the threshold with `LOCAL_DIGEST_HOOK_MIN_BYTES` if the redirects feel
+noisy; the cost of setting it too low is one wasted round trip per file.
+
+The hook runs on this PC only. A laptop using Option A has its own settings and
+would need its own copy, with `LOCAL_DIGEST_HOOK_CONFIG` pointed at its config.
+
 ## Known limits
 
 - Map-phase concurrency is 4 (`budgets.map_concurrency`). Measured gain on a
