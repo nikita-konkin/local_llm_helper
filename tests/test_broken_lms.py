@@ -91,3 +91,37 @@ def test_a_healthy_runtime_reports_no_error(sandbox):
     """The banner must stay hidden when nothing is wrong."""
     rt = Runtime(sandbox)
     assert rt.lms_error is None
+
+
+def test_a_replaced_binary_clears_the_latch(broken_lms, monkeypatch, tmp_path):
+    """Recovery must not require restarting every long-lived process.
+
+    Replacing the damaged binary is exactly how this gets fixed, and the MCP
+    server, worker and dashboard all outlive the outage. Carrying the stale
+    verdict until someone restarted them would repeat a mistake this project has
+    already paid for three times.
+    """
+    import time
+
+    rt, boom = broken_lms
+    monkeypatch.setattr("llmhelper.runtime.subprocess.run", boom)
+    rt._lms("ps", check=False)
+    assert rt.can_manage_models is False
+
+    # Same broken file, untouched: still refused, and no new spawn attempted.
+    assert rt.can_manage_models is False
+
+    time.sleep(0.01)
+    rt.lms.write_bytes(b"MZ" + b"\x90" * 8192)  # a different binary lands
+
+    assert rt.can_manage_models is True, "a replacement must be noticed"
+    assert rt.lms_error is None, "the stale explanation must be cleared too"
+
+
+def test_a_missing_binary_is_still_refused_after_a_latch(broken_lms, monkeypatch):
+    """Deleting it is not a repair."""
+    rt, boom = broken_lms
+    monkeypatch.setattr("llmhelper.runtime.subprocess.run", boom)
+    rt._lms("ps", check=False)
+    rt.lms.unlink()
+    assert rt.can_manage_models is False

@@ -276,6 +276,9 @@ class Runtime:
         self._catalog: list[ModelInfo] | None = None
         # None until we have tried to run it; False once a spawn has failed.
         self._lms_usable: bool | None = None
+        # Identity of the binary at the moment it failed, so a replacement is
+        # recognised as a repair rather than more of the same breakage.
+        self._lms_stamp: tuple | None = None
         # Why it failed, in words worth showing someone.
         self.lms_error: str | None = None
 
@@ -295,7 +298,26 @@ class Runtime:
         # and the dashboard 500'd on a machine that could otherwise have carried
         # on serving from the ledger. Once a spawn fails we stop claiming we can
         # manage models and degrade to the same path a remote client uses.
-        return self.lms.is_file() and self._lms_usable is not False
+        if not self.lms.is_file():
+            return False
+        if self._lms_usable is False:
+            # Latched broken - but a replaced binary is exactly how this gets
+            # fixed, and every long-lived process here (MCP server, worker,
+            # dashboard) would otherwise carry the stale verdict until someone
+            # restarted it. Stale processes have cost this project real time
+            # three times already, so notice the repair instead.
+            if self._lms_stamp == self._stat_stamp():
+                return False
+            self._lms_usable = None
+            self.lms_error = None
+        return True
+
+    def _stat_stamp(self) -> tuple | None:
+        try:
+            st = self.lms.stat()
+        except OSError:
+            return None
+        return (st.st_mtime_ns, st.st_size)
 
     def _lms(self, *args: str, timeout: float = 120.0, check: bool = True) -> str:
         if not self.can_manage_models:
@@ -321,6 +343,7 @@ class Runtime:
             # half-written binary. Latch it so the rest of the session takes the
             # degraded path instead of paying for a failing spawn every request.
             self._lms_usable = False
+            self._lms_stamp = self._stat_stamp()
             self.lms_error = (
                 f"{self.lms} exists but cannot be run ({exc.__class__.__name__}: {exc}). "
                 "The binary is damaged - open LM Studio and reinstall its CLI."
