@@ -25,3 +25,7 @@ __pycache__/
 
 # Not for sharing: this points at one machine's interpreter by absolute path.
 .mcp.json
+
+# Backups of the gitignored machine config - these carry real paths and a username.
+*.bak
+*.bak-*

@@ -387,6 +387,29 @@ attempt, an express call made during it waited and reported
 `waiting for the GPU, held by queue:digest (pid 50872)`, and one model stayed
 resident throughout.
 
+### Present is not the same as runnable
+
+An LM Studio self-update (0.4.12 to 0.4.21) left `lms.exe` as 120 MB of zeros -
+the size survived in the directory entry, the contents did not, and the PE header
+was gone. `can_manage_models` was `self.lms.is_file()`, so it said yes, so every
+call went on to `CreateProcess` and died with `WinError 1392`. `/api/status`
+returned a 500 and the dashboard showed nothing, on a machine that could still
+have reported CPU, GPU, RAM and the entire savings ledger.
+
+An existence check was standing in for "can I run this", and the proxy failed.
+`_lms` now catches `OSError`, latches the binary as unusable so later requests do
+not pay for a failing spawn, and reports a sentence saying what to do. Optional
+queries return empty, so the runtime degrades onto the same path a remote client
+already used.
+
+`snapshot()` needed fixing too: a dict literal is built top to bottom, so
+`lms_present` was read *before* the `loaded()` call that discovers the failure,
+and the same response claimed a healthy CLI it had just failed to run. The model
+list is fetched into a local first.
+
+This is the third component in this project to take down a whole view by failing
+alone. The other two were the worker and the dashboard's own probe.
+
 ### A search that lost the answer three ways at once
 
 A search for where read roots are enforced returned 40 matches on `fast` and

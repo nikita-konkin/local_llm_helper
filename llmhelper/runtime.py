@@ -274,6 +274,10 @@ class Runtime:
         self.llm = llm or LocalLLM(self.cfg)
         self.lms = self.cfg.server.lms_exe
         self._catalog: list[ModelInfo] | None = None
+        # None until we have tried to run it; False once a spawn has failed.
+        self._lms_usable: bool | None = None
+        # Why it failed, in words worth showing someone.
+        self.lms_error: str | None = None
 
     # ------------------------------------------------------------ lms shell
 
@@ -285,10 +289,16 @@ class Runtime:
         LM Studio. There the server owns model residency; this process can send
         requests but must not try to load, unload or enumerate anything locally.
         """
-        return self.lms.is_file()
+        # Present is not the same as runnable. Seen for real: an LM Studio
+        # self-update left lms.exe as 120 MB of zeros. is_file() still said yes,
+        # so every call went on to CreateProcess and died with WinError 1392,
+        # and the dashboard 500'd on a machine that could otherwise have carried
+        # on serving from the ledger. Once a spawn fails we stop claiming we can
+        # manage models and degrade to the same path a remote client uses.
+        return self.lms.is_file() and self._lms_usable is not False
 
     def _lms(self, *args: str, timeout: float = 120.0, check: bool = True) -> str:
-        if not self.lms.is_file():
+        if not self.can_manage_models:
             if not check:
                 return ""  # optional query on a remote client: absence is an answer
             raise RuntimeError_(f"lms CLI not found at {self.lms} — is LM Studio installed?")
@@ -306,6 +316,18 @@ class Runtime:
             )
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError_(f"`lms {' '.join(args)}` timed out after {timeout}s") from exc
+        except OSError as exc:
+            # The file is there and the OS refuses to execute it: a damaged or
+            # half-written binary. Latch it so the rest of the session takes the
+            # degraded path instead of paying for a failing spawn every request.
+            self._lms_usable = False
+            self.lms_error = (
+                f"{self.lms} exists but cannot be run ({exc.__class__.__name__}: {exc}). "
+                "The binary is damaged - open LM Studio and reinstall its CLI."
+            )
+            if not check:
+                return ""
+            raise RuntimeError_(self.lms_error) from exc
         if check and proc.returncode != 0:
             tail = (proc.stderr or proc.stdout or "").strip()[-600:]
             raise RuntimeError_(f"`lms {' '.join(args)}` failed ({proc.returncode}): {tail}")
@@ -521,14 +543,19 @@ class Runtime:
     def snapshot(self) -> dict:
         """Everything `llmh doctor` wants to report, in one call."""
         vram = gpu_memory_mb()
+        # Ask for the model list first. A dict literal is built top to bottom, so
+        # reading lms_present before this ran reported a healthy CLI in the same
+        # response that had just failed to run it.
+        loaded = [m.identifier for m in self.loaded()]
         return {
             "server_up": self.server_running(),
             "base_url": self.cfg.server.base_url,
             "lms_exe": str(self.lms),
-            "lms_present": self.lms.is_file(),
+            "lms_present": self.can_manage_models,
+            "lms_error": self.lms_error,
             "ram_free_gb": round(free_ram_gb(), 1),
             "ram_total_gb": round(total_ram_gb(), 1),
             "vram_used_mb": vram[0] if vram else None,
             "vram_total_mb": vram[1] if vram else None,
-            "loaded": [m.identifier for m in self.loaded()],
+            "loaded": loaded,
         }

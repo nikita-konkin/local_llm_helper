@@ -63,6 +63,8 @@
   .meter i { display:block; height:100%; width:0; border-radius:99px;
              background:var(--ok); transition:width .4s ease, background .4s ease }
   .meter i.warm { background:var(--warn) } .meter i.hot { background:var(--bad) }
+  .banner { border:1px solid var(--bad); color:var(--bad); border-radius:8px;
+            padding:9px 11px; margin-bottom:12px; font-size:12px; line-height:1.45 }
   .muted-row td { color:var(--dim) }
   .err-line { color:var(--bad); font-size:11px; margin-top:3px; line-height:1.35;
               word-break:break-word }
@@ -78,6 +80,7 @@
 <main>
   <section>
     <h2>Status</h2>
+    <div id="s-lms-error" class="banner" hidden></div>
     <div class="row"><span class="k">LM Studio server</span><span class="v" id="s-server">—</span></div>
     <div class="row"><span class="k">Worker</span><span class="v" id="s-worker">—</span></div>
     <div class="row"><span class="k">Model resident</span><span class="v" id="s-model">—</span></div>
@@ -255,6 +258,10 @@ async function refresh(fresh) {
     $('s-worker').innerHTML = s.worker_pid
       ? pill('running · pid ' + s.worker_pid,'ok') : pill('stopped','warn');
     $('s-model').textContent = s.loaded.length ? s.loaded.join(', ') : '—';
+    const lmsErr = $('s-lms-error');
+    if (s.lms_error) { lmsErr.textContent = s.lms_error; lmsErr.hidden = false; }
+    else { lmsErr.hidden = true; }
+
     meter('s-cpu-bar', s.cpu_pct);
     $('s-cpu').textContent = s.cpu_pct == null ? '—'
       : `${s.cpu_pct}%` + (s.cpu_cores ? ` of ${s.cpu_cores} cores` : '');

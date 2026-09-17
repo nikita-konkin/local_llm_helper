@@ -181,6 +181,9 @@ def api_status(fresh: bool = False) -> dict:
         "server_up": snap["server_up"],
         "base_url": snap["base_url"],
         "can_manage_models": probe["can_manage_models"],
+        # Present but unrunnable is a different problem from absent, and the
+        # page should say which rather than just showing dashes.
+        "lms_error": snap.get("lms_error"),
         "worker_pid": pid,
         "ram_free_gb": snap["ram_free_gb"],
         "ram_total_gb": snap["ram_total_gb"],
