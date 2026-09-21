@@ -144,12 +144,41 @@ class WorkerCfg:
 
 
 @dataclass(frozen=True)
+class ImagesCfg:
+    """Local image generation. Off by default: the weights are a 7 GB download.
+
+    ``offload`` is the one setting worth understanding. There is a single 16 GB
+    card and the LLM already occupies 6 GB of it:
+
+      offload = false  unload the LLM, put SDXL entirely on the GPU. Fastest.
+      offload = true   keep the LLM resident, page SDXL submodules across the
+                       PCIe bus per step. ~4 GB peak, roughly half the speed.
+
+    False is the default because an image job has no use for the LLM, and a
+    remote client can reload it on its next request. Flip it when something is
+    mid-conversation with the model and must not be interrupted.
+    """
+
+    enabled: bool = False
+    model: str = "stabilityai/stable-diffusion-xl-base-1.0"
+    offload: bool = False
+    steps: int = 30
+    guidance: float = 7.0
+    width: int = 1024
+    height: int = 1024
+    # A batch shares one pipeline load, so the marginal image is cheap - but each
+    # one is still seconds of a card someone else may be waiting for.
+    max_count: int = 4
+
+
+@dataclass(frozen=True)
 class Config:
     server: ServerCfg
     paths: PathsCfg
     budgets: BudgetsCfg
     worker: WorkerCfg
     tiers: dict[str, Tier] = field(default_factory=dict)
+    images: ImagesCfg = field(default_factory=ImagesCfg)
 
     def tier(self, name: str) -> Tier:
         try:
@@ -234,6 +263,18 @@ def load_config(path: str | Path | None = None) -> Config:
         idle_unload_after_s=float(wrk.get("idle_unload_after_s", 900.0)),
     )
 
+    img = raw.get("images", {})
+    images = ImagesCfg(
+        enabled=bool(img.get("enabled", False)),
+        model=str(img.get("model", ImagesCfg.model)),
+        offload=bool(img.get("offload", False)),
+        steps=int(img.get("steps", 30)),
+        guidance=float(img.get("guidance", 7.0)),
+        width=int(img.get("width", 1024)),
+        height=int(img.get("height", 1024)),
+        max_count=max(1, int(img.get("max_count", 4))),
+    )
+
     tiers: dict[str, Tier] = {}
     for name, t in raw.get("tiers", {}).items():
         tiers[name] = Tier(
@@ -254,7 +295,14 @@ def load_config(path: str | Path | None = None) -> Config:
     if worker.fallback_tier not in tiers:
         raise ConfigError(f"worker.fallback_tier {worker.fallback_tier!r} is not a configured tier")
 
-    return Config(server=server, paths=paths, budgets=budgets, worker=worker, tiers=tiers)
+    return Config(
+        server=server,
+        paths=paths,
+        budgets=budgets,
+        worker=worker,
+        tiers=tiers,
+        images=images,
+    )
 
 
 _cache: tuple[tuple, Config] | None = None

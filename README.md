@@ -117,6 +117,17 @@ back would undo the saving the job just made.
 
 `local_stats()` reports the ledger.
 
+**Image generation** — the one tool here that is not a context saving:
+
+`local_image(prompt, ...)` renders with SDXL on the same card and returns the
+**file path**, never image data — a 1024x1024 PNG inlined would cost more context
+than the rest of this server exists to save. Every image carries the seed that
+produced it, so a good one can be re-rendered exactly or varied one parameter at
+a time.
+
+It records **zero tokens saved**, deliberately. See
+[What the ledger does and does not count](#what-the-ledger-does-and-does-not-count).
+
 ### What it can read
 
 Two things decide whether a path is readable: it must sit inside
@@ -166,6 +177,47 @@ number meaningless. Genuine offloaded work was **62,106 tokens**.
 
 `--all-sources` shows the unfiltered total. Prefer the default: a metric that
 flatters itself is worse than no metric, because it gets quoted.
+
+Image jobs record **zero** input tokens for the same reason. An image absorbs no
+source material, so there is no compression ratio to report — and "a 1024x1024
+image is worth N tokens" would be a number nobody measured, sitting in the one
+table this project asks anyone to trust. `llmh image` prints a duration and no
+ratio; `local_image` returns a footer with no ratio.
+
+### Generating images
+
+Needs `diffusers`, `transformers`, `accelerate` and a CUDA `torch` in the venv.
+The working combination is **`diffusers==0.35.1` with `huggingface_hub<1.0`** —
+hub 1.x breaks transformers 4.57, and pinning hub back breaks diffusers 0.40 with
+`cannot import name 'get_cached_repo_tree'`. 0.35.1 is the version that satisfies
+both.
+
+FLUX.1-schnell would have been the better model and is now gated behind an HF
+token. SDXL base is OpenRAIL++-M and needs no account.
+
+```bash
+llmh image --fetch                       # ~7 GB of SDXL weights into the HF cache
+llmh image --count 4 --label icon "flat vector logo, ..."
+llmh image --seed 948264885 "..."        # re-render one exactly
+```
+
+Two things worth knowing before you spend an evening on prompts, both learned the
+hard way generating the first icon with it:
+
+**Over-negation destroys composition.** A negative prompt stuffed with structural
+words — `square, frame, border, panel, tile, outline` — does not give you a
+borderless image, it gives you noise. Twenty-odd terms is the ceiling; past that
+the latent has nowhere coherent left to go.
+
+**Prompts are silently truncated at 77 CLIP tokens.** diffusers logs this to
+stderr, which an MCP caller never sees, so the engine now warns through the normal
+progress channel and says how much was dropped. Roughly 55 words is the budget,
+and the tail is what you lose.
+
+SDXL base is good at a clean full-bleed mark and bad at precise logo geometry: it
+reads "two checkmarks crossing" as a repeating pattern, and "app icon" as a small
+rounded square with a long shadow. Treat the output as a reference, not a
+shippable asset.
 
 ## CLI
 

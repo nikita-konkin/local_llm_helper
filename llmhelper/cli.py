@@ -321,10 +321,16 @@ def _run_now(kind: str, spec: dict, tier: str | None) -> None:
         err.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from None
     console.print(Panel(result.summary, title=f"{kind} — {chosen.name}", border_style="green"))
-    console.print(
-        f"[dim]{_fmt(result.input_tokens)} source tokens -> {_fmt(result.output_tokens)} returned "
-        f"({result.compression}x, {result.duration_s:.0f}s)[/dim]"
-    )
+    if result.input_tokens:
+        console.print(
+            f"[dim]{_fmt(result.input_tokens)} source tokens -> "
+            f"{_fmt(result.output_tokens)} returned "
+            f"({result.compression}x, {result.duration_s:.0f}s)[/dim]"
+        )
+    else:
+        # A kind that absorbed nothing has no compression ratio to report, and
+        # printing "0x" would look like a measurement rather than an absence.
+        console.print(f"[dim]{result.duration_s:.0f}s[/dim]")
     if result.outbox_path:
         console.print(f"[dim]full detail: {result.outbox_path}[/dim]")
 
@@ -418,6 +424,65 @@ def transcribe(
         },
         tier,
     )
+
+
+@app.command()
+def image(
+    prompt: list[str] = typer.Argument(None, help="What to draw."),
+    negative: Optional[str] = typer.Option(None, "--negative", "-n", help="What to avoid."),
+    width: Optional[int] = typer.Option(None, "--width", help="Multiple of 8, 512-1536."),
+    height: Optional[int] = typer.Option(None, "--height", help="Multiple of 8, 512-1536."),
+    steps: Optional[int] = typer.Option(None, "--steps"),
+    guidance: Optional[float] = typer.Option(None, "--guidance", "-g"),
+    seed: Optional[int] = typer.Option(None, "--seed", help="Reproduce an image exactly."),
+    count: int = typer.Option(1, "--count", "-c", help="Variations to render."),
+    label: Optional[str] = typer.Option(None, "--label", help="Used for the filename."),
+    fetch_weights: bool = typer.Option(
+        False, "--fetch", help="Download the model weights and exit."
+    ),
+) -> None:
+    """Generate an image locally with SDXL. Writes PNGs into the outbox."""
+    from .imagegen import availability
+
+    cfg = get_config()
+    if fetch_weights:
+        from huggingface_hub import snapshot_download
+
+        console.print(f"fetching [bold]{cfg.images.model}[/bold] into the HuggingFace cache...")
+        path = snapshot_download(
+            cfg.images.model,
+            allow_patterns=[
+                "*.json", "*.txt", "**/*.fp16.safetensors", "**/vocab*", "**/merges*"
+            ],
+            ignore_patterns=["*.bin", "*.pth", "*onnx*", "sd_xl_base_1.0*.safetensors"],
+            max_workers=8,
+        )
+        console.print(f"[green]done[/green] -> {path}")
+        return
+
+    if not prompt:
+        err.print("[red]nothing to draw: pass a prompt[/red]")
+        raise typer.Exit(1)
+
+    avail = availability(cfg)
+    if not avail.ok:
+        err.print(f"[red]{avail.reason}[/red]")
+        raise typer.Exit(1)
+    console.print(f"[dim]{avail.device}, {avail.details.get('vram_gb')} GB[/dim]")
+
+    spec: dict = {
+        "prompt": " ".join(prompt),
+        "width": width if width is not None else cfg.images.width,
+        "height": height if height is not None else cfg.images.height,
+        "steps": steps if steps is not None else cfg.images.steps,
+        "guidance": guidance if guidance is not None else cfg.images.guidance,
+        "seed": seed,
+        "count": count,
+        "label": label or "",
+    }
+    if negative is not None:
+        spec["negative_prompt"] = negative
+    _run_now("image", spec, None)
 
 
 # ----------------------------------------------------------------- queue lane

@@ -10,6 +10,7 @@ from .ask import AskHandler
 from .base import Ctx, Handler, HandlerResult
 from .digest import DigestHandler
 from .grep import GrepHandler
+from .image import ImageHandler
 from .review import ReviewHandler
 from .transcribe import TranscribeHandler
 from .transform import TransformHandler
@@ -29,6 +30,7 @@ for _h in (
     TransformHandler(),
     ReviewHandler(),
     TranscribeHandler(),
+    ImageHandler(),
 ):
     register(_h)
 

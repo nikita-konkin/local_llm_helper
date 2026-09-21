@@ -39,7 +39,18 @@ DEFAULT_TIER: dict[str, str] = {
     "codechore": "fast",
     "review": "fast",
     "transcribe": "fast",
+    "image": "fast",
 }
+
+# Kinds that never call the LLM. They still go through execute() for the GPU
+# lease, the outbox and the ledger, but a machine with no downloaded LLM must
+# still be able to run them - resolving a tier is not a precondition of work
+# that has no use for one.
+NO_LLM_KINDS = frozenset({"image"})
+
+# Stands in for the tier an LLM-free job never picked, so the savings row has
+# something truthful to record rather than a model it did not run.
+NO_TIER = Tier(name="none", model="", context=0, min_free_ram_gb=0.0)
 
 
 class TierResolver:
@@ -126,7 +137,12 @@ def execute(
         runtime = Runtime(cfg, llm)
     llm = llm or runtime.llm
 
-    tier = TierResolver(cfg, runtime).resolve(kind, tier_name or spec.get("tier"))
+    try:
+        tier = TierResolver(cfg, runtime).resolve(kind, tier_name or spec.get("tier"))
+    except RuntimeError:
+        if kind not in NO_LLM_KINDS:
+            raise
+        tier = NO_TIER
     # source is already the lane: the worker is the only queued caller.
     lane = "queue" if source == "worker" else "express"
     ctx = Ctx(
