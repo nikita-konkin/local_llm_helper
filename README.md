@@ -317,6 +317,43 @@ The worker keeps **one** model resident and unloads before switching.
 | `deep` | `qwen3.8-27b` IQ4_XS | 13.3 GB | **Accuracy tier**, opt-in. 19 tok/s — queue it. |
 | `embed` | `nomic-embed-text-v1.5` | 84 MB | Reserved for a future corpus index. |
 
+### Adding a model you downloaded
+
+A model downloaded in LM Studio is **never used automatically**. Jobs are routed
+by tier, so a model does nothing until a `[tiers.*]` block names it. That is on
+purpose: a 30 GB download picked up by itself would spill off the card and make
+every job an order of magnitude slower.
+
+```bash
+llmh models                  # every downloaded model: used by which tier, fits the card?
+llmh models add              # pick one from a numbered list, name it, confirm
+llmh models add <key> --name x --context 16384 --yes
+```
+
+The dashboard has the same thing as **Downloaded models**: **Add as tier…** opens a
+form with the exact block that will be written, and nothing is written until you
+confirm.
+
+- **Descriptions are computed from LM Studio's metadata, not written by a model.**
+  They are sizes and ratios, and numbers the small models *compute* have been
+  wrong here. Each model is classed as `fits` (runs entirely on the GPU), `tight`
+  (fits only with one slot and a modest context) or `spills` (runs partly from
+  system RAM). A mixture-of-experts model is flagged, since it tolerates spilling
+  far better than a dense one: compare `work` with the dense 27B.
+- **Suggested settings follow what this project measured.** It never forces a GPU
+  layer count, uses `parallel = 1` for anything that doesn't comfortably fit,
+  starts from a small context, and turns thinking off. All of them can be edited.
+- **The block is appended.** Every comment above it survives byte for byte. The
+  new config must parse, and the new tier must actually resolve to the chosen
+  model. If either check fails, the original file is put back. A copy of the
+  previous file is kept as `config.toml.bak`.
+- **A new tier is opt-in.** Running servers see it straight away through config
+  hot-reload, but it is not the default for any job kind until you make it one.
+  Measure it first with `llmh bench --tier <name>`.
+- Model display names come from whoever uploaded the model. Those names are
+  written into the block as comments, so they are flattened to one line first:
+  a name containing a newline cannot add config lines of its own.
+
 The `heavy` tier (gpt-oss-120b) was **removed after measuring it**. It does load —
 217 s — but runs at 4.2 tok/s and leaves **0.6 GB of free RAM**, close enough to the
 edge to destabilise the desktop. A tier 24x slower than `fast` that risks the machine

@@ -868,6 +868,120 @@ def ui(
         console.print("stopped")
 
 
+# ------------------------------------------------------------------- models
+
+models_app = typer.Typer(
+    help="List downloaded models and add one as a tier.",
+    invoke_without_command=True,
+)
+app.add_typer(models_app, name="models")
+
+_FIT_STYLE = {"fits": "green", "tight": "yellow", "spills": "red"}
+
+
+def _print_candidates(cands) -> None:
+    table = Table(show_lines=True)
+    table.add_column("#", justify="right", style="dim")
+    table.add_column("model", overflow="fold")  # the key is what you type; never truncate it
+    table.add_column("size", justify="right")
+    table.add_column("fit")
+    table.add_column("used by")
+    table.add_column("about", ratio=1)
+    for n, c in enumerate(cands, start=1):
+        style = _FIT_STYLE.get(c.fit, "dim")
+        table.add_row(
+            str(n),
+            c.key,
+            f"{c.size_gb:g} GB",
+            f"[{style}]{c.fit}[/{style}]",
+            ", ".join(c.tiers) or "[bold]not used[/bold]",
+            c.description,
+        )
+    console.print(table)
+
+
+@models_app.callback()
+def models_list(ctx: typer.Context) -> None:
+    """Every downloaded model: whether a tier uses it, and whether it fits the card."""
+    if ctx.invoked_subcommand is not None:
+        return
+    from .models import scan
+
+    cfg = get_config()
+    cands = scan(cfg, _runtime())
+    if not cands:
+        err.print("[yellow]LM Studio reports no downloaded models[/yellow]")
+        raise typer.Exit(1)
+    _print_candidates(cands)
+    unused = [c for c in cands if c.addable and not c.tiers]
+    if unused:
+        console.print(
+            f"\n{len(unused)} model(s) no tier uses. A model is only ever run through a "
+            "tier - add one with [bold]llmh models add[/bold]."
+        )
+
+
+@models_app.command("add")
+def models_add(
+    key: Optional[str] = typer.Argument(None, help="Model key. Omit to choose from a list."),
+    name: Optional[str] = typer.Option(None, "--name", help="Tier name."),
+    context: Optional[int] = typer.Option(None, "--context"),
+    parallel: Optional[int] = typer.Option(None, "--parallel"),
+    gpu_ratio: Optional[float] = typer.Option(None, "--gpu-ratio"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Do not ask to confirm."),
+) -> None:
+    """Add a downloaded model to config.toml as a new tier."""
+    from .models import ModelsError, add_tier, scan
+
+    cfg = get_config()
+    rt = _runtime()
+
+    if key is None:
+        choices = [c for c in scan(cfg, rt) if c.addable and not c.tiers]
+        if not choices:
+            console.print("Every downloaded chat model is already in a tier.")
+            return
+        _print_candidates(choices)
+        pick = typer.prompt("Add which one? (number)", type=int)
+        if not 1 <= pick <= len(choices):
+            err.print(f"[red]{pick} is not in the list[/red]")
+            raise typer.Exit(1)
+        chosen = choices[pick - 1]
+        key = chosen.key
+        if name is None:
+            name = typer.prompt("Tier name", default=chosen.suggested_name)
+
+    overrides = {"context": context, "parallel": parallel, "gpu_ratio": gpu_ratio}
+    try:
+        preview = add_tier(key, name, overrides, runtime=rt, dry_run=True)
+    except ModelsError as exc:
+        err.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from None
+
+    console.print(Panel(preview.block.rstrip(), title=f"append to {preview.path}"))
+    if preview.fit == "spills":
+        console.print(
+            "[yellow]This model is larger than the card. It will load, but most of it "
+            "runs from system RAM.[/yellow]"
+        )
+    if not yes and not typer.confirm("Write it?", default=True):
+        console.print("nothing written")
+        return
+
+    try:
+        done = add_tier(key, name, overrides, runtime=rt)
+    except ModelsError as exc:
+        err.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from None
+
+    console.print(f"[green]added tier [bold]{done.name}[/bold][/green]")
+    console.print(
+        f"Use it with tier=\"{done.name}\" - running servers pick up config.toml "
+        "without a restart. It is not a default for any job kind.\n"
+        f"Measure it first:  [bold]llmh bench --tier {done.name}[/bold]"
+    )
+
+
 # ------------------------------------------------------------------- server
 
 server_app = typer.Typer(

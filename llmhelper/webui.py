@@ -410,6 +410,66 @@ def api_set_settings(patch: SettingsPatch) -> dict:
     }
 
 
+# ------------------------------------------------------------------- models
+
+
+@app.get("/api/models")
+def api_models() -> dict:
+    """Downloaded models, which tiers use them, and a description of each.
+
+    Runs `lms ls`, so the page asks for it on load and on Rescan rather than on
+    the 15-second refresh.
+    """
+    from .models import scan, vram_total_gb
+
+    rt = runtime()
+    if not rt.can_manage_models:
+        raise HTTPException(
+            503, rt.lms_error or "the lms CLI is not available, so the catalogue cannot be read"
+        )
+    vram = vram_total_gb()
+    return {
+        "vram_gb": vram,
+        "models": [c.to_dict() for c in scan(cfg(), rt, vram_gb=vram)],
+    }
+
+
+class AddTier(BaseModel):
+    key: str
+    name: str | None = None
+    context: int | None = None
+    parallel: int | None = None
+    gpu_ratio: float | None = None
+    dry_run: bool = False
+
+
+@app.post("/api/models/add")
+def api_models_add(req: AddTier) -> dict:
+    """Append a tier for a downloaded model. Validated, and restored on failure."""
+    from .models import ModelsError, add_tier
+
+    overrides = {"context": req.context, "parallel": req.parallel, "gpu_ratio": req.gpu_ratio}
+    try:
+        done = add_tier(req.key, req.name, overrides, runtime=runtime(), dry_run=req.dry_run)
+    except ModelsError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if not req.dry_run:
+        config_invalidate()
+    return {
+        "name": done.name,
+        "model": done.model,
+        "fit": done.fit,
+        "block": done.block,
+        "written": not req.dry_run,
+        "message": (
+            f"added tier {done.name}. Use it with tier=\"{done.name}\"; "
+            f"measure it with: llmh bench --tier {done.name}"
+            if not req.dry_run
+            else "preview only"
+        ),
+    }
+
+
 # ------------------------------------------------------------------ controls
 
 

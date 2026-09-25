@@ -57,6 +57,14 @@ class ModelInfo:
     # id from /v1/models on a remote host, where quantisation is unknowable and
     # there is nothing to disambiguate anyway.
     origin: str = "disk"
+    # Descriptive metadata from `lms ls --json`, for choosing a model to add as a
+    # tier. None of it takes part in matching.
+    display_name: str = ""
+    params: str = ""        # "27B", "35B-A3B" - the -A suffix marks mixture-of-experts
+    arch: str = ""
+    quant_bits: int = 0
+    vision: bool = False
+    tool_use: bool = False
 
     @property
     def base_key(self) -> str:
@@ -440,6 +448,12 @@ class Runtime:
                         max_context=int(e.get("maxContextLength") or 0),
                         variants=tuple(e.get("variants") or ()),
                         kind=e.get("type") or "llm",
+                        display_name=e.get("displayName") or "",
+                        params=e.get("paramsString") or "",
+                        arch=e.get("architecture") or "",
+                        quant_bits=int((e.get("quantization") or {}).get("bits") or 0),
+                        vision=bool(e.get("vision")),
+                        tool_use=bool(e.get("trainedForToolUse")),
                     )
                 )
         except (ValueError, TypeError):

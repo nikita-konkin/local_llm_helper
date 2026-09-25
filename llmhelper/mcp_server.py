@@ -60,6 +60,22 @@ BANNER = (
     "have been wrong while every citation beside them was exact.]"
 )
 
+def _tier_help() -> str:
+    """The tier list for tool descriptions, read from config.toml.
+
+    This was a hardcoded "fast | gemma | work | deep", so a tier added with
+    `llmh models add` worked when named but was never advertised - an agent
+    reading the schema had no way to know it existed. Evaluated when the server
+    starts, so a new tier appears in the schema after a restart.
+    """
+    try:
+        names = list(get_config().llm_tiers)
+    except Exception:  # noqa: BLE001 - a schema string must never stop the server starting
+        names = ["fast"]
+    note = " (deep = slowest, most accurate)" if "deep" in names else ""
+    return " | ".join(names) + note + ". Omit to auto-select."
+
+
 # A synchronous call may absorb at most this many source tokens before we insist
 # the work be queued instead. Roughly a minute or two of local compute.
 EXPRESS_SOURCE_LIMIT = 120_000
@@ -237,7 +253,7 @@ async def local_digest(
     question: Annotated[str, Field(description="What you want to know about them.")],
     max_out_tokens: Annotated[int, Field(description="Cap on the answer length.")] = 1200,
     tier: Annotated[
-        Optional[str], Field(description="fast | gemma | work | deep. Omit to auto-select.")
+        Optional[str], Field(description=_tier_help())
     ] = None,
 ) -> str:
     """Answer a question about files WITHOUT reading them into your context.
@@ -263,7 +279,7 @@ async def local_grep(
         str, Field(description="What you are looking for, in plain language.")
     ],
     max_hits: Annotated[int, Field(description="Cap on raw hits triaged.")] = 40,
-    tier: Annotated[Optional[str], Field(description="fast | gemma | work | deep (deep = slowest, most accurate).")] = None,
+    tier: Annotated[Optional[str], Field(description=_tier_help())] = None,
 ) -> str:
     """Search files and return only the matches that actually answer the query.
 
@@ -295,7 +311,7 @@ async def local_review(
     focus: Annotated[
         Optional[str], Field(description="Optional area to concentrate on.")
     ] = None,
-    tier: Annotated[Optional[str], Field(description="fast | gemma | work | deep (deep = slowest, most accurate).")] = None,
+    tier: Annotated[Optional[str], Field(description=_tier_help())] = None,
 ) -> str:
     """First-pass defect scan over files or a diff, done locally.
 
@@ -320,7 +336,7 @@ async def local_review(
 async def local_ask(
     prompt: Annotated[str, Field(description="A self-contained request.")],
     max_out_tokens: Annotated[int, Field(description="Cap on the answer length.")] = 1200,
-    tier: Annotated[Optional[str], Field(description="fast | gemma | work | deep (deep = slowest, most accurate).")] = None,
+    tier: Annotated[Optional[str], Field(description=_tier_help())] = None,
 ) -> str:
     """Run a small, self-contained generation on the local model.
 
@@ -375,7 +391,7 @@ async def local_submit(
     spec: Annotated[
         dict, Field(description="Job spec: paths + question, or query, or prompt.")
     ],
-    tier: Annotated[Optional[str], Field(description="fast | gemma | work | deep (deep = slowest, most accurate).")] = None,
+    tier: Annotated[Optional[str], Field(description=_tier_help())] = None,
     priority: Annotated[
         int, Field(description="0 highest, 5 normal, 8 lowest.")
     ] = Priority.NORMAL,
