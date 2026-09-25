@@ -136,21 +136,12 @@ def worker_pid() -> int | None:
     The lock is the same one `llmh worker` takes, so the dashboard and the CLI
     always agree about whether a worker exists.
     """
-    lock = Path(cfg().paths.logs) / "worker.pid"
-    if not lock.is_file():
-        return None
-    try:
-        pid = int(lock.read_text().strip() or 0)
-    except (ValueError, OSError):
-        return None
-    if not pid:
-        return None
-    try:
-        import psutil
+    # Delegates to the lock module rather than re-reading the file: this had its
+    # own pid_exists check, which a recycled pid fooled - and the dashboard's
+    # stop button terminates whatever this returns.
+    from .lock import holder
 
-        return pid if psutil.pid_exists(pid) else None
-    except Exception:  # noqa: BLE001
-        return None
+    return holder(cfg(), "worker")
 
 
 def _spawn_detached(args: list[str]) -> int:

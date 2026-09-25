@@ -26,16 +26,46 @@ class AlreadyRunning(RuntimeError):
     """Another instance holds the lock."""
 
 
-def pid_alive(pid: int) -> bool:
-    """True if a process with this pid exists. Never raises."""
+# Filesystem timestamps are coarser than process start times on some volumes,
+# and a holder writes its lock within milliseconds of starting. Two seconds of
+# slack costs nothing: pid reuse after a reboot is hours or days apart.
+_REUSE_SLACK_S = 2.0
+
+
+def pid_alive(pid: int, since: float | None = None) -> bool:
+    """True if a process with this pid exists and could have written the lock.
+
+    ``since`` is the lock file's mtime. A process that holds a lock must have
+    started before it wrote the file; one that started afterwards has merely
+    been handed a recycled pid.
+
+    Existence alone was the check until a reboot proved it wrong: webui.pid
+    still named 14908, Windows had given 14908 to msedgewebview2 at boot, and
+    `llmh ui` refused to start because "webui is already running". The same
+    test guards `llmh worker restart`, which *terminates* the holder - so a
+    stale worker.pid could have killed an unrelated process.
+
+    Never raises.
+    """
     if pid <= 0:
         return False
     try:
         import psutil
 
-        return psutil.pid_exists(pid)
-    except Exception:  # noqa: BLE001 - absence of psutil must not break the lock
+        if not psutil.pid_exists(pid):
+            return False
+        if since is None:
+            return True
+        return psutil.Process(pid).create_time() <= since + _REUSE_SLACK_S
+    except Exception:  # noqa: BLE001 - absence of psutil, or the pid vanished mid-check
         return False
+
+
+def _lock_mtime(path: Path) -> float | None:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return None
 
 
 def holder(cfg: Config, name: str) -> int | None:
@@ -47,7 +77,7 @@ def holder(cfg: Config, name: str) -> int | None:
         pid = int(path.read_text(encoding="utf-8").strip() or 0)
     except (ValueError, OSError):
         return None
-    return pid if pid_alive(pid) else None
+    return pid if pid_alive(pid, since=_lock_mtime(path)) else None
 
 
 @contextmanager
@@ -89,7 +119,11 @@ def _read_lease(path: Path) -> tuple[int, str] | None:
         pid = int(pid_s or 0)
     except ValueError:
         return None
-    return (pid, purpose or "?") if pid_alive(pid) else None
+    # A lease left behind by a reboot is the worst case of pid reuse: every
+    # express call would wait gpu_wait_s and fail, and the worker, which waits
+    # without limit, would never run again.
+    alive = pid_alive(pid, since=_lock_mtime(path))
+    return (pid, purpose or "?") if alive else None
 
 
 @contextmanager
