@@ -229,11 +229,37 @@ def bench(
 
     llm = LocalLLM(cfg)
     names = [tier] if tier else [n for n, t in cfg.tiers.items() if not t.is_embedding]
+    for n in names:
+        try:
+            cfg.tier(n)  # fail on a typo before touching the GPU, not after
+        except Exception as exc:  # noqa: BLE001
+            err.print(f"[red]{exc}[/red]")
+            raise typer.Exit(1) from None
     prompt = (
         "Explain in one paragraph why a mixture-of-experts model with 3B active "
         "parameters can be faster than a dense 9B model despite being larger."
     )
     rows = []
+
+    from .lock import GpuBusy, gpu_lease
+
+    # Bench unloads and loads models, so it takes the same GPU lease as every job.
+    # Without it a bench run would unload the model out from under a running
+    # worker job and put two models on one card, which is the clash the lease
+    # exists to prevent.
+    try:
+        lease = gpu_lease(cfg, "bench", wait_s=cfg.budgets.gpu_wait_s, on_wait=console.print)
+        lease.__enter__()
+    except GpuBusy as exc:
+        err.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from None
+
+    # Whatever was resident before, so it can be put back afterwards. A bench run
+    # should not leave a 30 GB model holding RAM that the next job has to evict.
+    resident = {m.identifier.split("@", 1)[0].rsplit("/", 1)[-1].lower() for m in rt.loaded()}
+    restore = next(
+        (t for t in cfg.llm_tiers.values() if t.base_key in resident), None
+    )
 
     for name in names:
         t = cfg.tier(name)
@@ -269,9 +295,23 @@ def bench(
             console.print(f"  [red]failed:[/] {exc}")
             rows.append({"tier": name, "model": t.model, "error": str(exc)})
 
+    try:
+        if restore is not None and restore.name not in names[-1:]:
+            console.print(f"[dim]restoring {restore.name}, which was resident before[/dim]")
+            rt.unload_all()
+            rt.ensure_loaded(restore)
+    except Exception as exc:  # noqa: BLE001 - the measurement is done; say so and move on
+        err.print(f"[yellow]could not restore {restore.name}: {exc}[/yellow]")
+    finally:
+        lease.__exit__(None, None, None)
+
+    from datetime import datetime, timezone
+
+    measured_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    for r in rows:
+        r["measured_at"] = measured_at
     cfg.paths.bench.mkdir(parents=True, exist_ok=True)
     out = cfg.paths.bench / "results.json"
-    out.write_text(json.dumps(rows, indent=2), encoding="utf-8")
 
     table = Table(title="benchmark", header_style="bold")
     for col in ("tier", "model", "load s", "tok/s", "VRAM MB", "verdict"):
@@ -293,8 +333,19 @@ def bench(
         "express call (the cap in mcp_server.py) is generation-bound. At 60 tok/s that "
         "call takes ~90 s; at 30 tok/s, ~3 min; at 12 tok/s, ~6 min.[/dim]"
     )
-    out.write_text(json.dumps(rows, indent=2), encoding="utf-8")
-    console.print(f"written to {out}")
+    # Merge by tier. This used to overwrite the file with whatever this run
+    # measured, so `bench --tier deep` erased every other tier's results; by the
+    # time anyone looked, only one row was left.
+    try:
+        previous = json.loads(out.read_text(encoding="utf-8"))
+        if not isinstance(previous, list):
+            previous = []
+    except (OSError, ValueError):
+        previous = []
+    measured = {r["tier"] for r in rows}
+    merged = [r for r in previous if r.get("tier") not in measured] + rows
+    out.write_text(json.dumps(merged, indent=2), encoding="utf-8")
+    console.print(f"written to {out} ({len(merged)} tier(s) on record)")
 
 
 # --------------------------------------------------------------- express lane
