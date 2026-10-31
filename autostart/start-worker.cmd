@@ -7,7 +7,7 @@ REM and the worker exits immediately if the server is not up yet.
 cd /d "%~dp0.."
 
 for /L %%i in (1,1,30) do (
-  .venv\Scripts\python.exe -c "import sys,httpx; sys.exit(0 if httpx.get('http://127.0.0.1:1234/v1/models', timeout=3).status_code==200 else 1)" 2>nul && goto :ready
+  .venv\Scripts\python.exe -c "import sys; from llmhelper.client import LocalLLM; sys.exit(0 if LocalLLM().healthy() else 1)" 2>nul && goto :ready
   timeout /t 5 /nobreak >nul
 )
 echo Model server did not come up; starting the worker anyway.

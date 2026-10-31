@@ -197,6 +197,10 @@
 
   <section>
     <h2>Settings</h2>
+    <div class="row"><label class="k" for="set-api-token">LM Studio API token</label><span class="v"><input id="set-api-token" type="password" autocomplete="new-password" placeholder="Enter a new token"></span></div>
+    <div class="note" id="api-token-status"></div>
+    <div class="btns"><button onclick="saveApiToken()">Save token</button><button onclick="saveApiToken(true)">Remove token</button></div>
+    <div class="note">Stored locally in config.toml. Leave blank to keep the saved token. Restart a running worker after changing it.</div>
     <div id="settings"></div>
     <div class="btns">
       <button onclick="saveSettings()">Save to config.toml</button>
@@ -393,6 +397,7 @@ async function loadConnect() {
 let settingsKeys = [];
 async function loadSettings() {
   const s = await get('/api/settings');
+  $('api-token-status').textContent = s.api_token_set ? 'Token saved (hidden).' : 'No token configured.';
   settingsKeys = Object.keys(s.editable);
   $('settings').innerHTML = settingsKeys.map(k => {
     const v = s.editable[k];
@@ -418,6 +423,16 @@ async function saveSettings() {
   }
   const j = await post('/api/settings', body);
   if (j) loadSettings();
+}
+
+async function saveApiToken(remove = false) {
+  const input = $('set-api-token');
+  if (!remove && !input.value.trim()) return;
+  const j = await post('/api/settings', {api_token: remove ? '' : input.value.trim()});
+  if (j) {
+    input.value = '';
+    await loadSettings();
+  }
 }
 
 const FIT = {fits:'ok', tight:'warn', spills:'bad'};

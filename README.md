@@ -60,6 +60,14 @@ Edit two things in `config.toml`:
 | `server.lms_exe` | where LM Studio's CLI lives. Omit on a remote client — see below |
 | `paths.read_roots` | **the only directories the local model may read.** This is the security boundary, not a convenience setting |
 
+If LM Studio requires authentication, open the dashboard's **Settings**, enter
+your **LM Studio API token**, and click **Save token**. The password field stays
+empty after saving; the page only reports whether a token is configured. Use
+**Remove token** to clear it. The token is stored in the gitignored `config.toml`
+as `server.api_token` (and may be retained in its local backup). Restart any
+running workers or MCP sessions after changing it; dashboard requests use the
+new token immediately.
+
 Then make the package importable from any working directory, so the MCP server
 starts regardless of which project launched it:
 

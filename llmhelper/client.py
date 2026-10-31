@@ -62,6 +62,9 @@ class LocalLLM:
         self._client = client or httpx.Client(
             timeout=httpx.Timeout(self.cfg.server.request_timeout_s, connect=10.0)
         )
+        token = getattr(self.cfg.server, "api_token", "")
+        if token:
+            self._client.headers["Authorization"] = f"Bearer {token}"
 
     # ------------------------------------------------------------- plumbing
 

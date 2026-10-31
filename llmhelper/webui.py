@@ -19,6 +19,7 @@ the boundary is edited in ``config.toml``, deliberately and with intent.
 from __future__ import annotations
 
 import os
+import json
 import socket
 import subprocess
 import sys
@@ -29,7 +30,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, SecretStr
 
 from .config import invalidate as config_invalidate, PROJECT_ROOT, Config, get_config, load_config
 from .store import Store
@@ -289,6 +290,7 @@ def api_job(job_id: str) -> dict:
 def api_settings() -> dict:
     c = cfg()
     return {
+        "api_token_set": bool(c.server.api_token),
         "editable": {
             "map_chunk_tokens": c.budgets.map_chunk_tokens,
             "map_summary_tokens": c.budgets.map_summary_tokens,
@@ -321,6 +323,7 @@ def api_settings() -> dict:
 
 
 class SettingsPatch(BaseModel):
+    api_token: SecretStr | None = None
     map_chunk_tokens: int | None = None
     map_summary_tokens: int | None = None
     map_concurrency: int | None = None
@@ -336,6 +339,7 @@ class SettingsPatch(BaseModel):
 
 # Which TOML table each editable key lives in.
 _TABLE = {
+    "api_token": "server",
     "map_chunk_tokens": "budgets",
     "map_summary_tokens": "budgets",
     "map_concurrency": "budgets",
@@ -363,6 +367,11 @@ def api_set_settings(patch: SettingsPatch) -> dict:
         raise HTTPException(400, f"no config at {path}")
 
     changes = {k: v for k, v in patch.model_dump().items() if v is not None}
+    if patch.api_token is not None:
+        token = patch.api_token.get_secret_value().strip()
+        if any(ord(ch) < 33 or ord(ch) > 126 for ch in token):
+            raise HTTPException(400, "API token must contain printable ASCII without spaces")
+        changes["api_token"] = token
     if not changes:
         return {"changed": [], "message": "nothing to change"}
 
@@ -383,13 +392,21 @@ def api_set_settings(patch: SettingsPatch) -> dict:
         key = stripped.split("=", 1)[0].strip()
         if key in changes and _TABLE.get(key) == table:
             value = changes[key]
-            rendered = f'"{value}"' if isinstance(value, str) else value
+            rendered = json.dumps(value) if isinstance(value, str) else value
             pad = len(line) - len(line.lstrip())
             width = max(len(key), 22)
             lines[i] = f"{' ' * pad}{key:<{width}} = {rendered}\n"
             applied.append(key)
 
     missing = sorted(set(changes) - set(applied))
+    if "api_token" in missing:
+        # Existing installations have no token key yet.
+        for i, line in enumerate(lines):
+            if line.strip() == "[server]":
+                lines.insert(i + 1, f'api_token = {json.dumps(changes["api_token"])}\n')
+                applied.append("api_token")
+                missing.remove("api_token")
+                break
     if missing:
         raise HTTPException(400, f"keys not found in config.toml: {missing}")
 
@@ -404,6 +421,7 @@ def api_set_settings(patch: SettingsPatch) -> dict:
         raise HTTPException(400, f"change rejected, config restored: {exc}") from exc
 
     config_invalidate()
+    _invalidate()
     return {
         "changed": applied,
         "note": "A running worker keeps its old settings until restarted.",

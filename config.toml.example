@@ -9,6 +9,8 @@
 # Paths may be absolute or relative to the project root (this file's directory).
 
 [server]
+# Optional LM Studio bearer token; also configurable in dashboard Settings.
+api_token = ""
 base_url          = "http://127.0.0.1:1234/v1"
 # Where LM Studio listens. "0.0.0.0" makes the model reachable from the LAN,
 # which another machine running its own copy needs. Passed on every start, since
